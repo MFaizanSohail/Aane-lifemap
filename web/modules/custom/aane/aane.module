@@ -1,0 +1,1502 @@
+<?php
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Access\AccessResult;
+use Drupal\user\Entity\User;
+use Drupal\Core\Entity\EntityInterface;
+/**
+ * @file aane.module
+ * TODO: Enter file description here.
+ */
+
+define('AANE_ADMIN', 'access administration pages');
+
+// TO FIX BUG WHERE BOOTSTRAP FUNCTION IS NOT LOADED WHEN RE-ARRANGING FIELDS
+// See https://drupal.org/comment/8522757#comment-8522757
+//require_once drupal_get_path('theme', 'bootstrap') . '/theme/process.inc';
+/**
+ * Implements hook_menu().
+ */
+function aane_menu() {
+  // This is the minimum information you can provide for a menu item.
+  $items['aane/import/coaches'] = array(
+    'title' => 'Import CSV Date to Coach Profiles',
+    'page callback' => 'aane_import_coach_profile',
+    'access arguments' => array('administer content'),
+    'file' => 'aane.dev.inc',
+  );
+  $items['admin/aane/test'] = array(
+    'title' => 'Test Stuff',
+    'page callback' => 'aane_test',
+    'access arguments' => array('administer content'), 
+    'file' => 'aane.dev.inc',
+  );
+  $items['admin/aane/dev'] = array(
+    'title' => 'Development Debugging',
+    'page callback' => 'aane_dev', 
+    'access arguments' => array('access content overview'),
+    'file' => 'aane.brad.inc',
+  );
+  $items['admin/aane/move-hhold-tasks'] = array(
+    'title'=>'Migrate household tasks to larger field',
+    'page callback'=>'aane_move_hhold_tasks',
+    'access arguments' => array('administer content'),
+    'file' => 'aane.dev.inc',
+  );
+  $items['admin/config/aane'] = array(
+    'title' => 'AANE Administration',
+    'page callback' => 'aane_admin_lander',
+    'access arguments' => array('access content overview'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/aane/fsa-rules'] = array(
+    'title' => 'Administer FSA Visibility',
+    'description' => 'Allow administrators to map specific FSA Fieldsets to specific top level goals',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('aane_fsa_rules_form'),
+    'access arguments' => array('access content overview'),
+    'file' => 'aane.dev.inc',
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+}
+
+function aane_admin_lander(){
+  return 'AANE Helper Admin';
+}
+
+/**
+ * Implements hook_variable_info().
+ * Permits billing period start date to be changed using the Admin UI.
+ *
+ * @param array $options
+ * @return array
+ */
+function aane_variable_info($options) {
+  $variable['aane_billing_start_date'] = array(
+    'title' => t('Billing period start date.'),
+    'description' => t('A date in the past when a bi-weekly billing period started. Preferably in YYYY-mm-dd format.'),
+    'type' => 'string',
+    'access' => 'administer content',
+    'default' => '2014-01-04',
+  );
+  return $variable;
+}
+
+
+/**
+ * Implements of hook_views_api().
+ */
+function aane_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'aane') . '/views',
+  );
+}
+
+/*************** EXPORT CODE *********************/
+
+/**
+ * Implements hook_node_export_alter()
+ * For friendlier exports of skills assessments
+ * @param $nodes
+ * @param $format_handler
+ */
+function aane_node_export_alter(&$nodes, $format_handler) {
+  // check that we are dealing with a skills assessment
+  if ( !in_array($nodes[0]->type, array('skills_assess_adult', 'skills_assess_teen')) ) {
+    return;
+  }
+//  $f1 = field_info_instance('node','field_ask_accept_support' , 'skills_assess_teen');
+  // get field information for both teen and adult skills assessments, both of which may be present
+  $field_info['skills_assess_teen'] = field_info_instances('node','skills_assess_teen');
+  $field_info['skills_assess_adult'] = field_info_instances('node','skills_assess_adult');
+  // list of node fields with data to keep
+  $keep = array('uid','nid','title','created','changed','name','type');
+  // count of nodes being exported
+  $node_ct = count($nodes);
+  // iterate over the array of nodes, gather the data we want, and replace the existing node with the gathered data
+  for ( $i = 0; $i<$node_ct; $i++ ) {
+    $node_data = array(); // holding tank
+    // store the data we want from the node, and fix dates
+    foreach ( $keep as $key ) {
+      $node_data[$key] = in_array($key, array('created','changed')) ?
+        date('Y-m-d H:i:s', $nodes[$i]->$key) :
+        $nodes[$i]->$key;
+    }
+    // get the client uid
+    if ( !empty($nodes[$i]->field_ref_client[LANGUAGE_NONE][0]['target_id']) ) {
+      $profile = profile2_load($nodes[$i]->field_ref_client[LANGUAGE_NONE][0]['target_id']);
+      if ( !empty($profile) ) $node_data['client uid'] = $profile->uid;
+    }
+    // get the rest of the field data, using field display labels where possible
+    foreach ( $field_info[$nodes[$i]->type] as $key => $field_meta ) {
+      $label = empty($field_meta['display_label']) ? $key : $field_meta['display_label'];
+      if ( isset($nodes[$i]->{$key}[LANGUAGE_NONE][0]['value']) ) {
+        $node_data[$label] = $nodes[$i]->{$key}[LANGUAGE_NONE][0]['value'];
+      }
+      elseif (isset($nodes[$i]->{$key}[LANGUAGE_NONE][0]['target_id']) ) {
+        $node_data[$label] = $nodes[$i]->{$key}[LANGUAGE_NONE][0]['target_id'];
+      }
+    }
+    // replace the node with the array
+    $nodes[$i] = $node_data;
+  }
+}
+
+/******** CUSTOM BLOCKS **************/
+/**
+ *  Implements hook_preprocess_block().
+ */
+function aane_preprocess_block(&$vars) {
+  // Implement shortcode in custom block.
+  if ($vars['elements']['#id'] != NULL && $vars['elements']['#id'] == 'block') {
+    $matches = [];
+    preg_match('/\[user:pid-from-uid:(\d+)\]/', $vars['content']['#markup'], $matches);
+    if (!empty($matches[1])) {
+      $uid = intval($matches[1]);
+      $profile = profile2_load_by_user(User::load($uid), 'client');
+      if ($profile) {
+        $vars['content']['#markup'] = str_replace($matches[0], $profile->pid, $vars['content']['#markup']);
+      }
+    }
+    $vars['content']['#markup'] = str_replace('[current-page:url]', \Drupal::request()->getRequestUri(), $vars['content']['#markup']);
+  }
+}
+
+/**** FORM CUSTOMIZATION CODE ****/
+
+/**
+ * Implements hook_form_alter().
+ * Hides group_admin from non admin users if present
+ * Adds fix where title of required goals field is not displayed in error message
+ *
+ * @param array &$form
+ * @param array &$form_state
+ * @param string $form_id (deprecated)
+ */
+function aane_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  if ($form_id == 'skills_assess_adult_node_form' || $form_id == 'skills_assess_teen_node_form') {
+    aane_goal_hide_fsa();
+  }
+
+  $currentUser = \Drupal::currentUser();
+  if (!$currentUser->hasPermission('AANE_ADMIN') && isset($form['#fieldgroups']['group_admin'])) {
+    $form['#fieldgroups']['group_admin']['#access'] = FALSE;
+  }
+
+  // Apply specific fix to the general problem of error labels for multi-valued required fields.
+  // See: https://www.drupal.org/node/436626, https://www.drupal.org/node/980144
+  if (isset($form['field_goals'])) {
+    $form['field_goals']['widget'][0]['#element_validate'][] = 'aane_fix_error_label';
+  }
+
+  // Remove personal contact form.
+  if ($form_id == 'user_profile_form') {
+    unset($form['contact']);
+  }
+
+  // Add goals info to appointment and client report node forms.
+  if ($form_id == 'appointment_node_form' || $form_id == 'client_report_node_form') {
+    $form['goals_info'] = [
+      '#type' => 'markup',
+      '#markup' => aane_get_goals(),
+      '#weight' => -10,
+    ];
+  }
+}
+
+/**
+ * Implements hook_field_extra_fields().
+ */
+function aane_field_extra_fields() {
+  $extra['node']['client_report'] = array(
+    'form' => array(
+      'goals_info' => array(
+        'label' => t('Goals'),
+        'description' => t('Get the client goals'),
+        'weight' => 0,
+      ),
+    )
+  );
+  $extra['node']['appointment'] = array(
+    'form' => array(
+      'goals_info' => array(
+        'label' => t('Goals'),
+        'description' => t('Get the client goals'),
+        'weight' => 0,
+      ),
+    )
+  );
+  return $extra;
+}
+
+/**
+ * Implements hook_node_view().
+ */
+function aane_node_view($node, $view_mode, $langcode) {
+  // The field is showed in when using full view mode and on page node type.
+  if ($view_mode == 'full' && ($node->type == 'client_report' || $node->type == 'appointment')) {
+    $node->content['goals_info'] = array(
+      '#markup' => aane_get_goals(),
+    );
+  }
+}
+
+
+/**
+ * Custom validation function to fix the error message when a required multi-valued field is not filled in
+ * @param $element
+ * @param $form_state
+ * @param $form
+ */
+function aane_fix_error_label($element, &$form_state, $form) {
+  // get the error messages.  Note that this clears existing error messages from the session.
+  $messages = drupal_get_messages('error');
+  // if we have error messages, check for bad ones and fix
+  if ( !empty($messages['error']) ) {
+    foreach ( $messages['error'] as $message ) {
+      // if the first char of the error message is a space, add the field title to the message
+      if ( ' ' == substr($message,0,1) ) {
+        $message = $form[$element['#field_name']][LANGUAGE_NONE]['#title'] . $message;
+      }
+      // every message has to be re-set, whether or not altered.
+      drupal_set_message($message, 'error');
+    }
+  }
+}
+
+/**
+ * Implements hook_profile2_form_alter() for profile2.api.php.
+ * Hides group_admin from non admin users if present
+ *
+ * @param array &$form
+ * @param array &$form_state
+ */
+function aane_form_profile2_form_alter(&$form, &$form_state) {
+  if ( !user_access(AANE_ADMIN) ) {
+    foreach ( array_keys($form) as $key ) {
+      if ( 'profile_' == substr($key,0,8) && isset($form[$key]['#fieldgroups']['group_admin'])) {
+        field_group_hide_field_groups($form[$key], array('group_admin'));
+      }
+    }
+  }
+}
+
+/************* CUSTOM ACCESS RULES *********************/
+
+/**
+ * Return array of content types that contain client-specific data.
+ *
+ * @return array
+ */
+function aane_client_content_types() {
+  return array(
+    'client_report',
+    'coaching_relationship',
+    'goal',
+    'intake_adult',
+    'intake_teen',
+    'skills_assess_adult',
+    'skills_assess_teen',
+  );
+}
+
+/**
+ * Returns array of fields used to refer to client profiles.
+ *
+ * @return array
+ */
+function aane_client_reference_fields() {
+  return array(
+    'field_ref_client',
+    'field_rel_client',
+    'field_related_client',
+    'field_report_client',
+    'field_time_client',
+  );
+}
+
+/**
+ * Implements hook_node_access().
+ * Denies coach view access to information about clients they do not and have not coached
+ * Denies coach edit access to appointments (coaching sessions) where status is other than Submitted
+ *
+ * @param object $node
+ * @param string $op
+ * @param object $account
+ * @return null|string
+ */
+function aane_node_access($node, $op, $account) {
+  if (!is_object($node) || empty($account->getRoles())) {
+    return AccessResult::neutral();
+  }
+
+  // Check if the user has admin or staff roles.
+  $is_admin_or_staff = array_intersect(['admin', 'staff'], $account->getRoles());
+
+  // Check if the user has coach or related roles.
+  $is_coach = in_array('coach', $account->getRoles());
+  $is_related = in_array('related', $account->getRoles());
+
+  // Coach restrictions.
+  if ($is_coach && $op == 'view' && in_array($node->getType(), aane_client_content_types())) {
+    $entity_list = aane_get_coach_entities($account->id(), $node->getType());
+    if (empty($entity_list[$node->id()]) || $node->getType() != $entity_list[$node->id()]) {
+      return AccessResult::forbidden();
+    }
+  }
+
+  // Update restriction for coach.
+  if ($is_coach && $op == 'update' && $node->getType() == 'appointment' && $node->get('field_payment_status')->target_id != 108) {
+    // Show a message to the user.
+    drupal_set_message(t('This coaching session has already been submitted to AANE for payment, and you can no longer edit it. Please contact AANE if this coaching session needs to be updated.'));
+    // Deny access.
+    return AccessResult::forbidden();
+  }
+
+  // Related party restrictions.
+  if ($is_related) {
+    //@todo: Implement related party restrictions.
+  }
+
+  // If the user is admin or staff, or no restrictions applied, return neutral result.
+  if ($is_admin_or_staff || !$is_coach || !$is_related) {
+    return AccessResult::neutral();
+  }
+}
+
+/**
+ * Implements hook_profile2_access().
+ * Denies access to client profiles to non-admins who are not in a coaching or similar relationship with client
+ * Does not ever GRANT access
+ * Calls aane_may_see_client()
+ *
+ * @param string $op
+ * @param Profile $profile
+ * @param object $account
+ * @return bool|null
+ */
+function aane_profile2_access($op, Profile $profile = NULL, $account = NULL) {
+  if ( !$profile ) return NULL;
+  // if this is a client profile, and we aren't trying to delete it, and current user does not have admin privileges
+  if ( !empty($profile->type) && 'client' == $profile->type && !user_access(AANE_ADMIN) && $op != 'delete' ) {
+    return aane_may_see_client($profile->uid, $account, false) ? NULL : FALSE;
+  }
+}
+
+/**
+ * Implements hook_entityform_access_alter().
+ * Prevents coaches from seeing applications of clients they do not actively coach
+ * @param bool $access
+ * @param string $op
+ * @param array $context
+ */
+function aane_entityform_access_alter(&$access, $op, $context) {
+  // if access already denied, return
+  if ( !$access ) return;
+  // if we don't know who user is, don't do anything
+  if ( empty($context['account']) ) return;
+
+  /** @var stdClass $account */
+  $account = $context['account'];
+  // special restrictions apply if we have a non-admin coach
+  if ( !user_access(AANE_ADMIN, $account) && in_array('coach', $account->roles)) {
+    /** @var Entityform $entityform */
+    $entityform = $context['entityform'];
+    // no access to anonymous forms
+    if ( !$entityform->uid ) {
+      $access = FALSE;
+      return;
+    }
+    // no access to clients not actively coached
+    $clients = aane_get_coach_clients($account->uid, true);
+    $access = isset($clients[$entityform->uid]);
+  }
+}
+
+/**
+ * Retrieves list of client-related fieldable entities that a coach can access
+ *
+ * @param integer $coach_uid
+ * @return array|NULL
+ */
+function aane_get_coach_entities($coach_uid) {
+  static $entities;
+  if ( !isset($entities) || !isset($entities[$coach_uid]) ) {
+    $clients = aane_get_coach_clients($coach_uid);
+    $fields = aane_client_reference_fields();
+    $selects = array();
+    foreach ( $fields as $field ) {
+      $selects[] = sprintf('SELECT entity_id, bundle FROM field_data_%s WHERE %s_target_id IN (:ids)', $field, $field);
+    }
+    $sql = implode("\nUNION\n",$selects);
+    $entities[$coach_uid] = db_query($sql, array(':ids'=>$clients))->fetchAllKeyed();
+  }
+
+  return $entities[$coach_uid];
+}
+
+/**
+ * Returns uid=>pid of all clients with whom coach has had an active coaching relationship
+ * @param integer $coach_uid
+ * @return array|FALSE
+ */
+function aane_get_coach_clients($coach_uid, $active_only = true) {
+  static $clients;
+  if ( !isset($clients) || !isset($clients[$coach_uid]) ) {
+    $sql = <<<SQL
+      SELECT cliprof.uid, cliprof.pid
+      FROM {profile} cliprof
+      JOIN {field_data_field_rel_client} client ON client.field_rel_client_target_id = cliprof.pid
+      JOIN {field_data_field_rel_coach} coach ON coach.entity_id = client.entity_id
+      JOIN {field_data_field_coaching_active} active ON active.entity_id = client.entity_id
+      JOIN {profile} coachprof ON coachprof.pid = coach.field_rel_coach_target_id
+      WHERE coachprof.uid = :coach_uid AND client.bundle = :bundle
+SQL;
+    $args = array(':bundle'=>'coaching_relationship', ':coach_uid'=>$coach_uid);
+    if ( $active_only ) {
+      $sql .= ' AND active.field_coaching_active_value = :active';
+      $args[':active'] = 1;
+    }
+    $clients[$coach_uid] = db_query($sql,$args)->fetchAllKeyed();
+  }
+  return $clients[$coach_uid];
+}
+
+
+/**
+ * Returns uid=>pid of all clients to whom party is related
+ * @param integer $related_uid
+ * @return array|FALSE
+ */
+function aane_get_related_clients($related_uid) {
+  static $clients;
+  if ( !isset($clients) || !isset($clients[$related_uid]) ) {
+    $sql = <<<SQL
+      SELECT cliprof.uid, cliprof.pid
+      FROM {profile} cliprof
+      JOIN {field_data_field_related_client} client ON client.field_related_client_target_id = cliprof.pid
+      JOIN {profile} relprof ON relprof.pid = client.entity_id
+      WHERE relprof.uid = :related_uid AND client.bundle = :bundle
+SQL;
+    $clients[$related_uid] = db_query($sql, array(':bundle'=>'related', ':related_uid'=>$related_uid))->fetchAllKeyed();
+  }
+  return $clients[$related_uid];
+}
+
+/**
+ * Returns whether current user is authorized to see records relating to that client
+ *
+ * @param integer $client_uid
+ * @param object $account - optional user account to test against.
+ * @return bool
+ */
+function aane_may_see_client($client_uid, $account=NULL, $active_only=true) {
+  if ( !$account ) {
+    $account = clone $GLOBALS['user'];
+  }
+  if ( 1 == $account->uid ) return TRUE; //super admin
+  if ( count(array_intersect(array('admin','staff'), $account->roles)) ) return TRUE; //all admin and staff
+  if ( in_array('coach', $account->roles) ) { // coach only if client is or was in coaching relationship
+    $client_list = aane_get_coach_clients($account->uid, $active_only);
+    return !empty($client_list[$client_uid]);
+  }
+  if ( in_array('related', $account->roles) ) {
+    $client_list = aane_get_related_clients($account->uid);
+    return !empty($client_list[$client_uid]);
+  }
+  if ( in_array('client', $account->roles) ) return ( $account->uid == $client_uid ); //client only if self
+  return FALSE;
+}
+
+
+/****************** CUSTOM WORKFLOW FUNCTIONS ********************************/
+
+/**
+ * Implements hook_form_[FORM ID]_alter for the appointment (coaching session) node form.
+ * Adds special billing date validation.
+ * @param array &$form
+ * @param array &$form_state
+ */
+function aane_form_appointment_node_form_alter(&$form, &$form_state) {
+  global $user;
+  if ( !count(array_intersect($user->roles, array('admin','staff'))) ) {
+    // if this is being created or edited by anyone other than admin or staff, add date validation and hide payment status
+    $form['field_time_entry_date']['#element_validate'][] = 'aane_time_entry_date_validate';
+    $form['field_payment_status']['#access'] = FALSE;
+    // if editing an existing session, disable funding program and private payment
+    if ( !empty($form_state['node']->nid) ) {
+      $form['field_funding_program'][LANGUAGE_NONE]['#disabled'] = TRUE;
+      $form['field_private_payment'][LANGUAGE_NONE]['#disabled'] = TRUE;
+    }
+  }
+}
+
+/**
+ * Implements hook_form_[FORM ID]_alter for the admin time_entry node form.
+ * Essentially identical to appointment_node_form_alter
+ * @param array &$form
+ * @param array &$form_state
+ */
+function aane_form_time_entry_node_form_alter(&$form, &$form_state) {
+  global $user;
+  if ( !count(array_intersect($user->roles, array('admin','staff'))) ) {
+    // if this is being created or edited by anyone other than admin or staff, add date validation and hide payment status
+    $form['field_time_entry_date']['#element_validate'][] = 'aane_time_entry_date_validate';
+    $form['field_payment_status']['#access'] = FALSE;
+    // if editing an existing session, disable funding program and private payment
+    if ( !empty($form_state['node']->nid) ) {
+      $form['field_funding_program'][LANGUAGE_NONE]['#disabled'] = TRUE;
+      $form['field_private_payment'][LANGUAGE_NONE]['#disabled'] = TRUE;
+    }
+  }
+}
+
+/**
+ * Validation function for date of appointment (coaching session) to ensure it is not too old to be entered
+ * @param array $element
+ * @param array &$form_state
+ */
+function aane_time_entry_date_validate($element, &$form_state) {
+  $appt = null;
+  $value =& $element[LANGUAGE_NONE][0]['#value']['value'];
+  if ( !empty($value['date']) ) {
+    $appt = new DateTime($value['date']);
+  }
+  elseif ( !empty($value['day']) && !empty($value['month']) && !empty($value['year']) ) {
+    $appt = new DateTime($value['month'].'/'.$value['day'].'/'.$value['year']);
+  }
+  $now = new DateTime('now');
+  if ( !$appt ) {
+    form_error($element, t('Date not recognized.'));
+  } elseif ( $appt < $now ) {
+    $start = new DateTime(variable_get_value('aane_billing_start_date'));
+    $bp = new DateInterval('P2W');
+    // bring $start up to the last start before the session
+    while ( $start < $appt ) $start->add($bp);
+    $start->sub($bp);
+    $grace = new DateInterval('P17DT12H');
+    // if the start of the billing period is more than 17 days and 12 hours before now, can't enter the time.
+    // i.e. if begins Sat 12am, must enter by noon on 3rd Tues following.
+    //@todogab - permit admins to enter this anyway
+    if ( $now->sub($grace) > $start ) {
+      form_error($element, t('Time entries/coaching sessions must be entered before 7am of the Monday following the end of the billing period.  Please contact AANE to submit this session.'));
+    }
+  } elseif ( $appt->format('Y-m-d') > $now->format('Y-m-d') ) {
+    form_error($element, t('You may make entries occurring in the future.'));
+  }
+
+}
+
+/************** REGISTRATION WORKFLOW **********************/
+
+/**
+ * Implements hook_form_[FORM ID]_alter
+ * New client workflow: create new client based on specified application
+ * @param $form
+ * @param &$form_state
+ */
+function aane_form_user_register_form_alter(&$form, &$form_state) {
+  $request = \Drupal::request();
+  $current_path = $request->getRequestUri();
+  $path_args = explode('/', $current_path);
+
+  // Check if the path has 'client' as the third argument.
+  if (isset($path_args[2]) && $path_args[2] == 'client') {
+    $query_params = $request->query->all();
+
+    // Check if 'field_application' parameter is present.
+    if (!empty($query_params['field_application'])) {
+      $form_id = (int) $query_params['field_application'];
+
+      if (!$form_id) {
+        return;
+      }
+
+      /** @var $application Entityform */
+      $application = entityform_load($form_id);
+      if ( empty($application) ) {
+        drupal_set_message('Could not find the application.  Please try again or contact Tech-Tamer for assistance.', 'error');
+        drupal_goto('dash/applications');
+      }
+
+      if ( empty($application->uid) ) {
+        // check for user profiles that point to this application.
+        $uid = db_query(
+          'SELECT p.uid FROM {profile} p LEFT JOIN {field_data_field_application} a ON a.entity_id = p.pid AND a.bundle=:client WHERE a.field_application_target_id = :form_id',
+          array(':client'=>'client', ':form_id'=>$form_id)
+        )->fetchColumn();
+        if ( $uid ) {
+          $application->uid = $uid;
+          $application->save();
+        }
+      }
+      // If user found, redirect to the edit form for that user/profile
+      if ( $application->uid ) {
+        drupal_set_message('A client record already exists for the application you clicked.  You have been redirected to the client\'s profile.','warning');
+        drupal_goto('client/' . $application->uid);
+      }
+      // deal with new application
+//          dpm($form);
+      /** @var $wrapper EntityDrupalWrapper for the application form answers **/
+      $wrapper = entity_metadata_wrapper('entityform', $application);
+
+      // fill in user fields
+      $user_f =& $form['account'];
+      $user_f['name']['#default_value'] = $wrapper->field_person_name->given->value() . ' ' . $wrapper->field_person_name->family->value();
+      $user_f['mail']['#default_value'] = $wrapper->field_email1->value();
+//          $form['account']['pass']['#default_value'] = 'lm-'.$form_id.'-aane';
+      $user_f['status']['#default_value'] = 0;
+      $user_f['roles'][6] = $form['account']['roles'][2]; //copy the authenticated user settings
+      $user_f['roles'][6]['#title'] = 'client';
+
+      // fill in profile fields using application form values, if available
+      $profile_f =& $form['profile_client']; // convenience variable
+      // load up the application form so we can conveniently copy values from it
+      module_load_include('inc', 'entityform','entityform.admin');
+      $application_form = entityform_form_wrapper($application, 'edit', 'embedded');
+//          dpm($application_form);
+      // copy default values from application form fields of same name
+      foreach ( element_children($profile_f) as $field ) {
+        if ( !empty($application_form[$field]) ) {
+          tech_tamer_copy_default_value($application_form[$field], $profile_f[$field]);
+        }
+      }
+
+      // fill in misc fields using application data
+      //special treatment for address field, which uses data in addition to default_value
+      $profile_f['field_address'][LANGUAGE_NONE][0]['#address'] = $application_form['field_address'][LANGUAGE_NONE][0]['#address'];
+      //create link to the current application - TAKEN CARE OF BY ENTITY REFERENCE PREPOPULATE
+//          $profile_f['field_application'][LANGUAGE_NONE]['#default_value'] = $form_id;
+//          $profile_f['field_application']['#disabled'] = true;
+      //set age group based on type of application
+      $profile_f['field_age_group'][LANGUAGE_NONE]['#default_value'] = ( 'appl_teen' == $wrapper->getBundle() ? 'Teen' : 'Adult' );
+
+      // add post-submit processing to fix the author of the original application after the user/profile have been saved
+      $form['#submit'][] = 'aane_user_register_form_post_submit';
+
+    }
+  }
+}
+
+/**
+ * New client workflow continued:
+ * Change the owner of the application form to the newly created client.
+ * @param $form
+ * @param $form_state
+ */
+function aane_user_register_form_post_submit($form, &$form_state) {
+  $params = drupal_get_query_parameters();
+  if ( !empty($params['field_application']) ) {
+    $form_id = intval($params['field_application']);
+    if ( !$form_id ) return;
+    if ( empty($form_state['user']->uid) ) return;
+    $uid = $form_state['user']->uid;
+    /** @var $application Entityform */
+    $application = entityform_load($form_id);
+    $application->uid = $uid;
+    $application->save();
+  }
+}
+
+/************** ADD APPLICATION TO EXISTING CLIENT *****************/
+
+/**
+ * Entity form modification (not including entityforms made part of registration)
+ * @param $form
+ * @param $form_state
+ * @param $form_id
+ */
+function aane_form_entityform_edit_form_alter(&$form, &$form_state, $form_id) {
+
+  // Processing for adult and teen application forms
+  if ( in_array($form['#form_id'], array('appl_adult_entityform_edit_form', 'appl_teen_entityform_edit_form')) ) {
+    global $user;
+
+    // if owner of form has not been set, check whether owner has been specified by URL
+    // and make it accessible in the form
+    $client_uid = NULL;
+    if ( isset($form['#entity']) && empty($form['#entity']->uid) ) {
+      $params = drupal_get_query_parameters();
+      if ( !empty($params['client_uid']) ) {
+        $client_uid = intval($params['client_uid']);
+        if ( empty($form['#client_uid']) ) $form['#client_uid'] = $client_uid;
+      }
+    }
+
+    // if user is logged in, add some extra processing after submit to potentially copy submitted application data to profile
+    if ( !empty($user->uid) && !empty($form['actions']) ) {
+      foreach ( element_children($form['actions']) as $button ) {
+        if ( 'submit' == $form['actions'][$button]['#type'] ) {
+          $form['actions'][$button]['#submit'][] = 'aane_user_application_submit';
+        }
+      }
+    }
+
+    // if form is new and a client_uid is specified, pre-fill using profile data
+    // but only if done by specified client (who can create own application), or a member of staff
+    if ( $client_uid && ( $user->uid == $client_uid || user_access(AANE_ADMIN) ) ) {
+      // get the user's profile
+      $profile = profile2_by_uid_load($client_uid, 'client');
+      if ( !$profile ) {
+        drupal_set_message('Could not load information for specified client', 'error');
+        return;
+      }
+      // put the profile data into a form, for easier copying into the application form
+      module_load_include('inc', 'profile2_page', 'profile2_page');
+      $profile_form = entity_ui_get_form('profile2', $profile, 'edit');
+      // fill in application fields using profile form values, if available
+      $profile_f =& $profile_form['profile_client']; // convenience variable
+      // copy default values from profile form to application form fields of same name
+      foreach ( element_children($form) as $field ) {
+        if ( !empty($profile_f[$field]) && 'field_lifemap_program' != $field ) {
+          tech_tamer_copy_default_value($profile_f[$field], $form[$field]);
+        }
+      }
+    } // end pre-fill form from profile
+
+    // if edit by staff, remove all required fields
+    if ( user_access(AANE_ADMIN) ) {
+      if ( !is_array($form['#after_build']) ) $form['#after_build'] = array();
+      $form['#after_build'][] = 'tech_tamer_remove_required';
+    }
+
+  }
+}
+
+/**
+ * Post-submit function to copy application form values to form owner's profile
+ * @param $form
+ * @param $form_state
+ */
+function aane_user_application_submit($form, $form_state) {
+  global $user;
+
+  // this test should be superfluous, but just in case.
+  if ( empty($user->uid) ) return;
+
+  // reference the application entity (which has been saved at this point)
+  $application = $form_state['entityform'];
+
+  // do we know who the owner of this application is supposed to be?
+  // first, see whether it was set in form_alter using a url parameter.
+  $client_uid = empty($form['#client_uid']) ? NULL : $form['#client_uid'];
+  $designated_uid = $client_uid;
+  // if client_uid not set using a url parameter, but application is owned by a real user, use that (for editing existing application)
+  if ( !$client_uid && $application->uid > 1 ) $client_uid = $application->uid;
+
+  // if we still don't know who the owner is, quit here.
+  if ( !$client_uid ) return;
+
+  // make sure that current user is authorized to change the profile of the application owner
+  // admins can, and they can re-set the ownership of a mis-
+  if ( user_access(AANE_ADMIN) ) {
+
+    // fix the ownership of the application if this is a staff member and a URL designated a client
+    if ( $designated_uid && $application->uid != $designated_uid ) {
+      $application->uid = $designated_uid;
+      $application->save();
+    }
+  }
+  // non-admin can change their profile only if the application is already theirs
+  else {
+    // if client does not own this application, quit
+    if ( $application->uid != $user->uid ) return;
+  }
+
+  // Copy values to the profile
+  // load up the profile of the specified user
+  $profile = profile2_by_uid_load($client_uid, 'client');
+  if ( !$profile ) {
+    watchdog('AANE', "Could not load profile based on UID $client_uid in application");
+    drupal_set_message('However, I could not update the client profile with the information in the application.', 'warning');
+    return;
+  }
+  // wrap it for easy access
+  $p_wrap = entity_metadata_wrapper('profile2', $profile);
+  // wrap the application for easy access
+  $appl_wrap = entity_metadata_wrapper('entityform',$application);
+  // get the overlapping fields
+  $prof_fields = array_intersect(array_keys(get_object_vars($profile)), array_keys(get_object_vars($application))); //$form_state['values']));
+  // we don't want to set the program based on the form
+  unset($prof_fields['field_lifemap_program']);
+  // we only want actual "field_" fields
+  $prof_fields = array_filter($prof_fields, function($var) { return 'field'==substr($var,0,5); });
+  // don't update the profile unless something has changed
+  $update = false;
+  try {
+    // add the application itself to the profile
+    $existing = $p_wrap->field_application->raw();
+    $a_id = $appl_wrap->getIdentifier();
+    if ( !is_array($existing) ) $existing = array();
+    if ( !in_array($a_id, $existing) ) {
+      $update = true;
+      $existing[] = $a_id;
+      $p_wrap->field_application->set($existing);
+    }
+
+    // update profile data
+    foreach ( $prof_fields as $field ) {
+      try {
+        $old_val = $p_wrap->$field->value();
+        $new_val = $appl_wrap->$field->value();
+        // deal with subfields
+        if (is_array($old_val) && is_array($new_val)) {
+          $sub_update = FALSE;
+          // add a 'country' subfield to deal with addressfields, for which you always have to set the country
+          // other fields will ignore it
+          //        if ( !isset($new_val['country']) ) $new_val['country'] = 'US';
+          foreach ($new_val as $subfield => $subval) {
+            if (isset($old_val[$subfield]) && $old_val[$subfield] != $subval) {
+              $old_val[$subfield] = $subval;
+              //            $p_wrap->$field->$subfield->set($subval);
+              $sub_update = TRUE;
+            }
+          }
+          if ($sub_update) {
+            $update = TRUE;
+            $new_val = $old_val;
+            $p_wrap->$field->set($new_val);
+          }
+        }
+        // simple values
+        elseif ($old_val != $new_val) {
+          $update = TRUE;
+          $p_wrap->$field->set($new_val);
+        }
+      } catch (Exception $e) {
+        $msg = "Error setting $field - new val: " . print_r($new_val,true) . PHP_EOL . $e->getMessage();
+        watchdog('AANE',$msg);
+        drupal_set_message('However, I could not update the client profile with the information in the application.', 'warning');
+        //@todogab - remove this after debugging
+//        throw(new Exception($msg));
+      }
+    } // end field loop
+    if ( $update ) {
+      try {
+        $p_wrap->save();
+      } catch(Exception $e) {
+        $msg = 'Error on profile save: ' . $e->getMessage();
+        watchdog('AANE',$msg);
+        drupal_set_message('However, I could not update the client profile with the information in the application.', 'warning');
+        //@todogab - remove this after debugging
+//        throw(new Exception($msg));
+      }
+    }
+  } catch(Exception $e) {
+    $msg = 'AANE Unidentified wrapper error: ' . $e->getMessage();
+    watchdog('error', $msg);
+    drupal_set_message('However, I could not update the client profile with the information in the application.', 'warning');
+    //@todogab - remove this after debugging
+//    throw(new Exception($msg));
+  }
+}
+
+/**
+ * Implements hook_entity_update
+ * @param object $entity
+ * @param string $type
+ */
+
+function aane_entityform_update(EntityInterface $entity) {
+  // Check if the entity type is 'entityform' and the uid is not set and 
+  // the entity type is either 'appl_adult' or 'appl_teen'.
+  if ($entity->getEntityTypeId() === 'entityform' && !$entity->getOwner() && in_array($entity->bundle(), ['appl_adult', 'appl_teen'])) {
+    $aid = $entity->id();
+    $query = \Drupal::entityQuery('profile')
+      ->condition('field_application', $aid)
+      ->condition('type', 'client');
+    $uids = $query->execute();
+
+    if (!empty($uids)) {
+      // Retrieve the first uid.
+      $uid = reset($uids);
+      // Set the entity's owner.
+      $entity->setOwner($uid);
+      // Save the entity.
+      $entity->save();
+    }
+  }
+}
+/******************** FUNDING STATUS *********************/
+/**
+ * Implements hook_block_info()
+ * Defines custom blocks for AANE Lifemap so they can be seen in the blocks admin
+ * @return array
+ */
+function aane_block_info() {
+  $blocks = array();
+  $blocks['funding_status'] = array(
+    'info' => t("Client's funding status"),
+    'cache' => DRUPAL_CACHE_PER_PAGE,
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view
+ * Returns output for custom blocks
+ * @param string $delta
+ * @return array
+ */
+function aane_block_view($delta = '') {
+  $block = array();
+  switch($delta) {
+    case 'funding_status':
+      // this block only works if the client uid is the second page parameter (client dashboard views)
+      $client_uid = intval(arg(1));
+      if ( $client_uid ) {
+        $block['subject'] = NULL;
+        $block['content'] = aane_show_funding_status($client_uid, FALSE);
+      }
+      break;
+  }
+  return $block;
+}
+
+/**
+ * Generates custom HTML to display client's funding status
+ * Provides a default summary
+ * Is capable of delivering different summaries for different programs, by tid of program
+ * @param int $client_uid
+ * @param bool $render - whether to return a renderable array, or to render the array and return a string, defaults to false
+ * @return array|string
+ */
+function aane_show_funding_status($client_uid, $render=FALSE) {
+  $profile = profile2_by_uid_load($client_uid, 'client');
+  if ($profile) $client = entity_metadata_wrapper('profile2', $profile);
+  if ( !$profile || !$client ) {
+    $output = array(
+      '#markup' => 'Client not specified or could not find specified client.'
+    );
+  }
+  else {
+    $output = array(
+      'funding' => array(
+        '#prefix' => '<ul>',
+        '#suffix' => '</ul>',
+      ),
+//    'budget' => array(),
+//    'status' => array(),
+    );
+    $funding = $client->field_funding_program->value();
+    if (!empty($funding)) {
+      $output['funding']['label'] = array(
+        '#prefix' => '<li><strong>',
+        '#suffix' => '</strong>',
+        '#markup' => 'Current Funding Program: ',
+      );
+      $output['funding']['program'] = array(
+        '#prefix' => '',
+        '#suffix' => '</li>',
+        '#markup' => $funding->name,
+      );
+      $output['funding']['description'] = array(
+        '#markup' => $funding->description,
+      );
+      $summary_func = 'aane_funding_status_' . $funding->tid;
+    }
+    if ($client->field_private_payment->value()) {
+      $output['funding']['private'] = array(
+        '#prefix' => '<li>',
+        '#suffix' => '</li>',
+        '#markup' => '<strong>Private payment</strong> (in whole or in part): YES',
+      );
+    }
+    if ($client->field_budget->value()) {
+      $output['budget'] = array(
+        '#prefix' => '<p>Budget: ',
+        '#suffix' => '</p>',
+        '#markup' => $client->field_budget->value(),
+      );
+    }
+    // use default summary function if program summary function not set or does not exist
+    if (!isset($summary_func) || !function_exists($summary_func)) {
+      $summary_func = 'aane_funding_status_default';
+    }
+    $output['summary'] = array(
+      '#prefix' => '<p><strong>Hours by Month</strong>',
+      '#suffix' => '</p>',
+      '#markup' => $summary_func($client->pid->value(), NULL),
+    );
+  }
+//  $output['debug'] = array(
+//    '#prefix' => '<pre>',
+//    '#suffix' => '</pre>',
+//    '#markup' => print_r($funding,true),
+//  );
+  return $render ? drupal_render($output) : $output;
+}
+
+/**
+ * Generate a monthly summary of appointment (coaching session) lengths
+ * Called by aane_show_funding_status()
+ * @param integer $client_pid - client profile id
+ * @param integer $program_tid - optional funding program
+ * @return string
+ */
+function aane_funding_status_default($client_pid, $program_tid=NULL) {
+  $args = array(':client_pid'=>$client_pid);
+  $sql = <<<SQL
+    SELECT t.name, DATE_FORMAT(d.field_time_entry_date_value, '%b %Y') AS amonth, SUM(h.field_time_entry_length_value) AS alength
+    FROM {profile} p
+    LEFT JOIN {field_data_field_time_client} cli ON cli.field_time_client_target_id = p.pid
+    LEFT JOIN {field_data_field_time_entry_date} d ON d.entity_id = cli.entity_id
+    LEFT JOIN {field_data_field_time_entry_length} h ON h.entity_id = cli.entity_id
+    LEFT JOIN {field_data_field_funding_program} f ON f.entity_id = cli.entity_id
+    LEFT JOIN {taxonomy_term_data} t ON t.tid = f.field_funding_program_tid
+    WHERE p.pid = :client_pid
+SQL;
+  if ( $program_tid ) {
+    $sql .= ' AND f.field_funding_program_tid = :program_tid';
+    $args[':program_tid'] = $program_tid;
+  }
+  $sql .= ' GROUP BY amonth';
+  $sql .= ' ORDER BY d.field_time_entry_date_value ASC';
+  $results = db_query($sql, $args);
+  $output = '<ul class="funding-summary">';
+  foreach ( $results as $row ) {
+    $output .= sprintf('<li><span class="month">%s</span><br><span class="hours">%0.2f</span></li>', $row->amonth, $row->alength);
+  }
+  return $output . '</dl>';
+}
+/**
+ * Impliments hook_node_create
+ * Catch appointment and report creation and tell the parent assignments to auto update
+ */
+function aane_node_insert($node) {
+  if ($node->type == 'appointment') {
+    aane_update_assignment_on_appointment_create($node);
+  }
+  if ($node->type == 'skills_assess_teen') {
+    aane_update_assignment_on_report_create($node);
+  }
+  if ($node->type == 'skills_assess_adult') {
+    aane_update_assignment_on_report_create($node);
+  }
+}
+
+function aane_update_assignment_on_appointment_create($appointment){
+  $coach_field = field_get_items('node', $appointment, 'field_time_coach');
+  if (!$coach_field) { return false; }
+  $client_field = field_get_items('node', $appointment, 'field_time_client');
+  if (!$client_field) { return false; }
+  $coach_profile = $coach_field[0]['target_id'];
+  $client_profile = $client_field[0]['target_id'];
+  $assignment = aane_get_assignment($coach_profile, $client_profile);
+  if($assignment){
+  	node_save($assignment);
+  	$disabled_email = field_get_items('node', $assignment, 'field_disable_email');
+  	$disabled = false;
+  	if(isset($disabled_email)){
+  		if($disabled_email[0]['value'] == '1') $disabled = true;
+  	}
+  	if(!$disabled){
+  	  $hours_field = field_get_items('node', $assignment, 'field_hours_since_report');
+  	  if(!empty($hours_field)){
+  		$params = array();
+  		global $user;
+  		$params['account'] = $user;
+  		$hours = $hours_field[0]['value'];
+  		$profile = profile2_load($client_profile);
+  		$params['client'] = $profile->label;
+  		if($hours >= 7 && $hours < 8){
+ 			drupal_mail('aane', 'coach_next_visit', $user->mail, user_preferred_language($user), $params);
+  		}elseif($hours > 8){
+  			drupal_mail('aane', 'coach_overdue', $user->mail, user_preferred_language($user), $params);
+  		}
+  	  }
+  	 }
+  }
+}
+
+function aane_update_assignment_on_report_create($report){
+  $coach = user_load($report->uid);
+  $profile = profile2_load_by_user($coach, 'coach');
+  $client_field = field_get_items('node', $report, 'field_ref_client');
+  if (!$client_field) { return false; }
+  $client_profile = $client_field[0]['target_id'];
+  $assignment = aane_get_assignment($profile->pid, $client_profile);
+  if($assignment){
+    node_save($assignment);
+  }
+}
+
+/**
+ * Count the hours for a coaching assignment
+ */
+function aane_count_hours_coaching_assignment($nid){
+  
+  if(is_int($nid)){
+    $assignment = node_load($nid);
+  }else{
+    $assignment = $nid;
+    if($assignment->is_new) return 0;
+  }
+  $coach_field = field_get_items('node', $assignment, 'field_rel_coach');
+
+  if (!$coach_field) { return 0; }
+  
+  $client_field = field_get_items('node', $assignment, 'field_rel_client');
+  if (!$client_field) { return 0; }
+  
+  $coach = $coach_field[0]['target_id'];
+  $client = $client_field[0]['target_id'];
+  
+  $date = 0;
+  $latest = aane_get_latest_fsa($coach, $client);
+  if($latest) $date = $latest->created;
+  $hours = aane_count_hours_since($coach, $client, $date);
+  return $hours;
+}
+
+function aane_init() {
+  if(arg(0) == 'coach-dashboard'){
+    global $user;
+    aane_overdue_reports($user->uid);
+  }
+}
+
+function aane_notify_coach_next_visit($account) {
+  $params = array();
+  $params['account'] = $account;
+  // example_mail() will be called based on the first drupal_mail() parameter.
+  drupal_mail('aane', 'coach_next_visit', $account->mail, user_preferred_language($account), $params);
+}
+
+function aane_mail($key, &$message, $params) {
+    $data['user'] = $params['account'];
+    $options['language'] = $message['language'];
+    user_mail_tokens($variables, $data, $options);
+    $variables['!username'] = $data['user']->name;
+    $variables['!client'] = $params['client'];
+    drupal_set_message($variables);
+    switch($key) {
+      case 'coach_next_visit':
+        $langcode = $message['language']->language;
+        $message['subject'] = t('AANE: Client is due for reevaluation', $variables, array('langcode' => $langcode));
+        $message['body'][] = t("Dear !username\n\nThis is a reminder that your client !client is due for re-evaluation at his/her next coaching session. \n\nYou will continue to receive this message till the evaluation is done\n\nSincerely, \nLifeMAP Team.", $variables, array('langcode' => $langcode));
+        break;
+      case 'coach_overdue':
+        $langcode = $message['language']->language;
+        $message['subject'] = t('AANE: Client is overdue for reevaluation', $variables, array('langcode' => $langcode));
+        $message['body'][] = t("Dear !username\n\nThis is a reminder that your client !client is overdue for re-evaluation at his/her next coaching session. \n\nYou will continue to receive this message till the evaluation is done\n\nSincerely, \nLifeMAP Team.", $variables, array('langcode' => $langcode));
+        break;
+    }
+}
+
+
+
+/**
+ * Get overdue reports for coach by uid
+ */
+function aane_overdue_reports($coach){
+  $coach = user_load($coach);
+  $profile = profile2_by_uid_load($coach->uid, 'coach');
+  $query = new EntityFieldQuery();
+
+  $query->entityCondition('entity_type', 'node')
+    ->entityCondition('bundle', 'coaching_relationship')
+    ->addMetaData('account', user_load(1))
+    ->fieldCondition('field_hours_since_report', 'value', 8, '>=')
+    ->fieldCondition('field_rel_coach', 'target_id', $profile->pid);
+    
+  $result = $query->execute();
+  $nodes = array();
+  if (isset($result['node'])) {
+    $nids = array_keys($result['node']);
+    $nodes = node_load_multiple($nids);
+  }
+  foreach($nodes as $node){
+    $client_field = field_get_items('node', $node, 'field_rel_client');
+    $client = $client_field[0]['target_id'];
+    $profile = profile2_load($client);
+    $name = field_get_items('profile2', $profile, 'field_person_name'); 
+    $active = field_get_items('node', $node, 'field_coaching_active');
+    $is_active = true;
+    if(isset($active[0])){
+      if(isset($active[0]['value'])){
+        if($active[0]['value'] == 0){
+          $is_active = false;
+        }
+      }
+    }
+    if($is_active){
+      drupal_set_message(t('Client: !name is due for evaluation.  Click <a href="!url">here</a> to enter an FSA and <a href="!urlb">here</a> to enter an Anxiety/Confidence Measure.', array(
+      	'!name' => $name[0]['safe']['given'] . ' ' .$name[0]['safe']['family'],
+      	'!url' => '/client-dash/'.$profile->uid.'/assessments',
+      	'!urlb' => '/client-dash/'.$profile->uid.'/goals'
+      )), 'error');
+    }
+  }
+}
+
+
+/**
+ * Count the hours for a client and coach
+ */
+function aane_count_hours_since($coach, $client, $date){
+  $sql = <<<SQL
+SELECT profile.pid AS pid, 
+  		length_table.field_time_entry_length_value as length
+	FROM 
+		{profile} profile
+		LEFT JOIN {field_data_field_time_coach} field_data_field_time_coach 
+			ON profile.pid = field_data_field_time_coach.field_time_coach_target_id 
+			AND field_data_field_time_coach.entity_type = 'node'
+		LEFT JOIN {node} appointment 
+			ON field_data_field_time_coach.entity_id = appointment.nid
+			AND appointment.type = 'appointment'
+		LEFT JOIN {field_data_field_time_entry_length} length_table
+		    ON field_data_field_time_coach.entity_id = length_table.entity_id
+		    AND length_table.entity_type = 'node'
+		LEFT JOIN {field_data_field_time_entry_date} date_field
+		    ON field_data_field_time_coach.entity_id = date_field.entity_id
+		    AND date_field.entity_type = 'node'
+		LEFT JOIN {field_data_field_time_client} client
+		    ON field_data_field_time_coach.entity_id = client.entity_id
+		    AND client.entity_type = 'node'
+		LEFT JOIN {profile} client_profile
+		    ON client.field_time_client_target_id = client_profile.pid
+		WHERE ( profile.pid = :pid AND profile.type IN ('coach') )
+			AND ( client_profile.pid = :client_pid AND client_profile.type IN ('client') )
+			AND date_field.field_time_entry_date_value > :date 
+	LIMIT 50 OFFSET 0
+SQL;
+  $results = db_query($sql, array(':pid' => $coach, ':client_pid' => $client, ':date' => gmdate("Y-m-d H:i:s", $date)));
+  $count = 0;
+  foreach($results as $result){
+  	$count += floatval($result->length);
+  }
+  return $count;
+}
+
+/**
+ * Count the hours for a client and coach
+ */
+function aane_count_hours($coach, $client){
+  $sql = <<<SQL
+SELECT profile.pid AS pid, 
+  		length_table.field_time_entry_length_value as length
+	FROM 
+		{profile} profile
+		LEFT JOIN {field_data_field_time_coach} field_data_field_time_coach 
+			ON profile.pid = field_data_field_time_coach.field_time_coach_target_id 
+			AND field_data_field_time_coach.entity_type = 'node'
+		LEFT JOIN {field_data_field_time_entry_length} length_table
+		    ON field_data_field_time_coach.entity_id = length_table.entity_id
+		    AND length_table.entity_type = 'node'
+		LEFT JOIN {field_data_field_time_client} client
+		    ON field_data_field_time_coach.entity_id = client.entity_id
+		    AND client.entity_type = 'node'
+		LEFT JOIN {profile} client_profile
+		    ON client.field_time_client_target_id = client_profile.pid
+		WHERE ( profile.pid = :pid AND profile.type IN ('coach') )
+			AND ( client_profile.pid = :client_pid AND client_profile.type IN ('client') )
+	LIMIT 50 OFFSET 0
+SQL;
+  $results = db_query($sql, array(':pid' => $coach, ':client_pid' => $client));
+  $count = 0;
+  foreach($results as $result){
+  	$count += floatval($result->length);
+  }
+  return $count;
+}
+
+function aane_goal_hide_fsa(){
+  if(isset($_GET['field_ref_client'])){
+    $client = (string) intval($_GET['field_ref_client']);
+  }else{
+    return true;
+  }
+  if($client){
+	  $query = new EntityFieldQuery();
+	  $query->entityCondition('entity_type', 'node')
+			->entityCondition('bundle', 'goal')
+			->addMetaData('account', user_load(1))
+			->fieldCondition('field_status', 'value', '1')
+			->fieldCondition('field_ref_client', 'target_id', $client);
+	  $result = $query->execute();
+	  $node = false;
+	  $nids = false;
+	  $goals = array();
+	  $output = '';
+
+	  if (isset($result['node'])) {
+  		$nids = array_keys($result['node']);
+  		$nodes = node_load_multiple($nids);
+  		foreach($nodes as $node){
+  		  $details = field_get_items('node', $node, 'field_details');
+        $term = field_get_items('node', $node, 'field_goal_term');
+        $term = taxonomy_term_load($term[0]['tid']);
+        $parent_term = get_parent_terms($term->tid);
+        $goals[$parent_term->tid] = $parent_term;
+      }
+    }
+  }
+
+  $values = variable_get('aane_fsa_rules', '');
+  $css = array();
+  $default = '';
+  
+  foreach($values as $tid => $values){
+    if(isset($goals[$tid])){
+      foreach($values as $key => $value){
+        if($value == 1){
+          $css[$key] = '';
+        }else{
+          if(!isset($css[$key])) $css[$key] = 'display:none;';
+        }
+        
+      }
+    }
+  }
+  $inline = '';
+  foreach($css as $attribute => $declaration){
+    $inline .= '.'.$attribute.'{'.$declaration.'}';
+  }
+  drupal_add_css($inline, 'inline');
+}
+
+
+function get_parent_terms($term) {
+  $parents = taxonomy_get_parents_all($term);
+  foreach($parents as $parent) {
+	  if (count(taxonomy_get_parents_all($parent->tid))==1) { return $parent; }
+  }
+}
+function aane_get_goals(){
+  $client = false;
+  if(isset($_GET['field_time_client'])) $client = (string) intval($_GET['field_time_client']);
+  if(isset($_GET['field_report_client']))  $client = (string) intval($_GET['field_report_client']);
+  if($client){
+	  $query = new EntityFieldQuery();
+	  $query->entityCondition('entity_type', 'node')
+			->entityCondition('bundle', 'goal')
+			->addMetaData('account', user_load(1))
+			->fieldCondition('field_status', 'value', '1')
+			->fieldCondition('field_ref_client', 'target_id', $client);
+	  $result = $query->execute();
+	  $node = false;
+	  $nids = false;
+	  $output = '';
+
+	  if (isset($result['node'])) {
+  		$nids = array_keys($result['node']);
+  		$nodes = node_load_multiple($nids);
+  		$output = '<div class="goals"><strong>Client Goals:</strong><br />';
+  		foreach($nodes as $node){
+  		  $details = field_get_items('node', $node, 'field_details');
+  		  $term = field_get_items('node', $node, 'field_goal_term');
+  		  $goal = taxonomy_term_load($term[0]['tid']);
+  		  
+  		  $description = '';
+  		  if(!empty($details[0]['value'])) $description = check_plain($details[0]['value']);
+  		  $output .= '<strong>'.check_plain($goal->name).':</strong> '. $description .' <br /><br />';
+  		}
+	  }
+	  return $output;
+	}
+	return '';
+}
+
+/** 
+ * Get the latest report for a coach and client profile id
+ *
+ */
+function aane_get_latest_fsa($coach, $client){
+  $profile = profile2_load($coach);
+  $query = new EntityFieldQuery();
+
+  $query->entityCondition('entity_type', 'node')
+    ->entityCondition('bundle', 'skills_assess_teen')
+    ->addMetaData('account', user_load(1))
+    ->propertyCondition('uid', $profile->uid)
+    ->fieldCondition('field_ref_client', 'target_id', $client)
+    ->propertyOrderBy('created', 'DESC')
+    ->range(0, 1);
+  $result = $query->execute();
+  $node = false;
+  $nids = false;
+  if (isset($result['node'])) {
+    $nids = array_keys($result['node']);
+  }else{
+    $query->entityCondition('entity_type', 'node')
+		->entityCondition('bundle', 'skills_assess_adult')
+		->addMetaData('account', user_load(1))
+		->propertyCondition('uid', $profile->uid)
+		->fieldCondition('field_ref_client', 'target_id', $client)
+		->propertyOrderBy('created', 'DESC')
+		->range(0, 1);
+	  $result = $query->execute();
+	  if (isset($result['node'])) {
+		$nids = array_keys($result['node']);
+	  }
+  }
+  if($nids){
+    $nodes = node_load_multiple($nids);
+    $node = current($nodes);
+  }
+  return $node;
+}
+
+/** 
+ * Get the latest report for a coach profile id and client profile id
+ *
+ */
+function aane_get_assignment($coach, $client){
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'node')
+    ->entityCondition('bundle', 'coaching_relationship')
+    ->addMetaData('account', user_load(1))
+    ->fieldCondition('field_rel_coach', 'target_id', $coach)
+    ->fieldCondition('field_rel_client', 'target_id', $client)
+    ->range(0, 1);
+  $result = $query->execute();
+  if (isset($result['node'])) {
+    $nids = array_keys($result['node']);
+    $nodes = node_load_multiple($nids);
+  }else{
+    return false;
+  }
+  return current($nodes);
+}
+
+function _aane_resave_all_coaching_assignments(){
+  $assignments = getCoachingAssignments();
+  foreach($assignments as $assign){
+    drupal_set_message($assign->title);
+    node_save($assign);
+  }
+  return '';
+}
+
+/**
+ * Get all of the coaching assignments.  If you pass a coach and or a client, the list
+ * will be filtered by the pairing
+ * @return array nodes
+ */
+function getCoachingAssignments($coach = false, $client = false){
+  $query = new EntityFieldQuery();
+
+  $query->entityCondition('entity_type', 'node')
+  ->entityCondition('bundle', 'coaching_relationship')
+  ->addMetaData('account', user_load(1)); // Run the query as user 1.
+  
+  if($coach){
+    $query->fieldCondition('field_rel_coach', 'target_id', $coach);
+  }
+  
+  if($client){
+    $query->fieldCondition('field_rel_client', 'target_id', $client);
+  }
+
+  $result = $query->execute();
+
+  if (isset($result['node'])) {
+    $nids = array_keys($result['node']);
+    $nodes = node_load_multiple($nids);
+  }
+  return $nodes;
+}
+

@@ -1,0 +1,97 @@
+name: Adult Application
+description: Entityform + fields - fieldgroups
+core_version_requirement: ^9 || ^10
+package: Features
+dependencies:
+  - address
+  - date
+  - email
+  - entity
+  - entity_form
+  - features
+  - field_group
+  - list
+  - name
+  - number
+  - options
+  - select_or_other
+  - taxonomy
+  - telephone
+  - text
+configuration:
+  entity_form_display.appl_adult.default:
+    status: true
+    dependencies:
+      module:
+        - entity_form
+    id: appl_adult.default
+    targetEntityType: entity_form_display
+    bundle: appl_adult
+    mode: default
+    content:
+      field_access_to_car:
+        type: string
+        weight: 1
+      field_address:
+        type: string
+        weight: 2
+      field_age_diagnosis:
+        type: string
+        weight: 3
+      # Include other fields similarly
+  entity_form_display.appl_adult.form:
+    status: true
+    dependencies:
+      module:
+        - entity_form
+    id: appl_adult.form
+    targetEntityType: entity_form_display
+    bundle: appl_adult
+    mode: form
+    content:
+      field_access_to_car:
+        type: string_textfield
+        weight: 1
+      field_address:
+        type: address
+        weight: 2
+      field_age_diagnosis:
+        type: string_textfield
+        weight: 3
+      # Include other fields similarly
+  field.field.entityform.appl_adult.field_access_to_car:
+    status: true
+    dependencies:
+      module:
+        - entity_form
+    id: appl_adult.field_access_to_car
+    field_name: field_access_to_car
+    entity_type: entityform
+    bundle: appl_adult
+    label: 'Access to Car'
+    field_type: string
+  # Include other field instances similarly
+  taxonomy.vocabulary.lifemap_program:
+    status: true
+    dependencies:
+      module:
+        - taxonomy
+    id: lifemap_program
+    vid: lifemap_program
+    name: 'Lifemap Program'
+features_exclude:
+  field_group:
+    - group_admin|entityform|appl_adult|default
+    - group_admin|entityform|appl_adult|form
+    - group_applicant_information|entityform|appl_adult|default
+    - group_applicant_information|entityform|appl_adult|form
+    - group_diagnosis_treatment|entityform|appl_adult|default
+    - group_diagnosis_treatment|entityform|appl_adult|form
+    - group_goals_interests|entityform|appl_adult|default
+    - group_goals_interests|entityform|appl_adult|form
+    - group_history|entityform|appl_adult|default
+    - group_history|entityform|appl_adult|form
+    - group_program|entityform|appl_adult|default
+    - group_statement_truth|entityform|appl_adult|form
+    - group_truth|entityform|appl_adult|default
+project_path: modules/custom

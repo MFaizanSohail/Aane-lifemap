@@ -1,0 +1,53 @@
+<?php
+
+/**
+ * @file 
+ * Contains tests for the Custom Input module.
+ */
+
+/**
+ * Test case.
+ */
+class Custom_inputTestCase extends DrupalWebTestCase {
+
+  /**
+   * Implements getInfo().
+   */
+  public static function getInfo() {
+    return array(
+      'name' => t('Custom Input tests'),
+      'description' => t('Test modification of fields.'),
+      'group' => t('Custom Input'),
+    );
+  }
+
+  /**
+   * Implements setUp().
+   */
+  function setUp() {
+    // Call the parent with an array of modules to enable for the test.
+    // @todogab: add modules for other field types
+    parent::setUp(array('custom_input', 'field_ui', 'list', 'email', 'link', 'number', 'options', 'text'));
+    // Create admin user and log in.
+    $admin = $this->drupalCreateUser(array('administer content types', 'bypass node access'));
+    $this->drupalLogin($admin);
+    // Add fields to the default "page" content type that can be used for testing
+    $this->drupalPost('admin/structure/types/manage/page/fields', array(
+      'fields[_add_new_field][label]' => 'Test field',
+      'fields[_add_new_field][field_name]' => 'test_field',
+      'fields[_add_new_field][type]' => 'text',
+      'fields[_add_new_field][widget_type]' => 'text_textfield',
+    ), t('Save'));
+//    $this->drupalPost('admin/structure/types/manage/page/fields/field_test_field', array(), t('Save settings'));
+
+  }
+
+  /**
+   * Test the module's functionality.
+   */
+  function testFieldIsPresent() {
+    $form = $this->drupalGet('node/add/page');
+    $this->assertFieldById('edit-field-test-field-und-0-value','', 'The test field (edit-field-test-field-und-0-value) exists on the page.');
+  }
+
+}

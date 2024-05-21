@@ -1,0 +1,29 @@
+<?php
+use Drupal\Core\Database\Connection;
+/**
+ * @file aane.install
+ * installation file for aane module
+ */
+
+/**
+ * Implements hook_install
+ * Makes the aane module the last to be called when hooks are invoked
+ */
+//function aane_install() {
+//  // Get the maximum weight from the 'system' table for the 'module' type.
+//  $query = \Drupal::database()->select('system', 's');
+//  $query->addExpression('MAX(s.weight)', 'weight');
+//  $query->condition('s.type', 'module');
+//  $query->condition('s.name', 'aane', '<>');
+//
+//  $weight = $query->execute()->fetchField();
+//
+//  // Increment the weight by 10.
+//  $weight += 10;
+//
+//  // Update the 'weight' field for the 'aane' module.
+//  \Drupal::database()->update('system')
+//    ->fields(['weight' => $weight])
+//    ->condition('name', 'aane')
+//    ->execute();
+//}

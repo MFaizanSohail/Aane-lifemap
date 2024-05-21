@@ -1,0 +1,580 @@
+<?php
+/**
+ * @file
+ * Implements custom_input functionality
+ *
+ * @author  Tech-Tamer <tech-tamer@tech-tamer.com>
+ * @version 0.2
+ */
+
+/**
+ * Applies custom_input settings to elements.
+ *
+ * @param array $element -- the current element to which settings may be applied
+ * @return array $element -- the revised element
+ */
+function custom_input_pre_render($element) {
+
+  //quick exit if no settings
+  if ( empty($element['#custom_input']) ) return $element;
+
+  // replace default theme functions with custom_input versions
+  if ( !empty($element['#theme']) ) custom_input_theme_alter($element['#theme']);
+  if ( !empty($element['#theme_wrappers']) ) custom_input_theme_wrappers_alter($element['#theme_wrappers']);
+
+  $settings = $element['#custom_input']; //convenience variable
+
+  /**
+   * From here on, the process is to check whether a setting exists and whether it
+   * applies, and if so, apply the setting and erase it so that the setting is not
+   * re-applied to child elements. Finally, add this pre-render function to each
+   * child element, so that settings may be applied at lower levels after other
+   * modules have had their say.
+   **/
+
+  // outermost element always gets wrapper classes, regardless of type.  Prepopulation happens here as well.
+  if ( !empty($settings['wrapper_classes']) && !empty($element['#parents']) && count($element['#parents']) == 1 ) {
+    if ( empty($element['#attributes']) ) $element['#attributes'] = array();
+    custom_input_apply_classes($element['#attributes'], $settings['wrapper_classes']);
+    unset($settings['wrapper_classes']);
+
+
+
+  }
+
+  $pre_render_children = TRUE; //flag, if true, add this pre_render function and the remaining settings to each child of the element
+
+  // apply settings to identifiable field types, skip the outer container
+  if ( !empty($element['#type']) && 'container' != $element['#type'] ) {
+
+    // prompt gets set for most elements
+    if ( in_array($element['#type'], array('date_combo','radios','checkboxes','link_field','textfield','textarea','select','radio','checkbox')) ) {
+      if ( !empty($settings['prompt']) )  {
+        $element['#title'] = $settings['prompt'];
+        unset($settings['prompt']);
+      }
+      if ( !empty($settings['states']['state']) ) {
+        $element['#states'] = custom_input_parse_states($settings['states']);
+        unset($settings['states']);
+      }
+    }
+
+    // types that act as fieldsets get group classes applied and help is moved
+    if ( in_array($element['#type'], array('date_combo', 'radios', 'checkboxes', 'link_field')) ) {
+      // apply group class
+      if ( !empty($settings['group_classes']) ) {
+        if ( empty($element['#attributes']) ) $element['#attributes'] = array();
+        custom_input_apply_classes($element['#attributes'], $settings['group_classes']);
+      }
+      unset($settings['group_classes']);
+      // move help should be applied only at this level, not below
+      // @todogab -- is this really necessary?
+      unset($settings['move_help']);
+    }
+    //stop at these simple field types and apply remaining settings
+    elseif ( in_array($element['#type'], array('textfield', 'textarea', 'select')) ) {
+      $pre_render_children = FALSE;
+      if ( empty($element['#attributes']) ) $element['#attributes'] = array();
+      if ( !empty($settings['input_classes']) ) {
+        custom_input_apply_classes($element['#attributes'], $settings['input_classes']);
+      }
+      if ( !empty($settings['advanced']['input_attr']) ) {
+        custom_input_apply_attr($element['#attributes'], $settings['advanced']['input_attr']);
+      }
+    }
+    //also stop at these field types and apply attributes, but not input class (which should go on the wrapper)
+    //@todogab - where then is the input class applied?
+    elseif ( in_array($element['#type'], array('radio', 'checkbox')) ) {
+      $pre_render_children = FALSE;
+      if ( !empty($settings['advanced']['input_attr']) ) {
+        if ( empty($element['#attributes']) ) $element['#attributes'] = array();
+        custom_input_apply_attr($element['#attributes'], $settings['advanced']['input_attr']);
+      }
+    }
+
+    // diagnostics for unrecognized field types and placeholder for some sort of modularization.
+    elseif ( !in_array($element['#type'], array('container','date_popup','fieldset','text_format')) ) {
+//      kpr($element);
+    }
+
+    // diagnostics for parent containers, if any.  Also hook for possible future modularization.
+  } else {
+//    kpr($element);
+  }
+
+  if ( $pre_render_children ) {
+    // iterate over the children to add settings and tell them to submit to pre-rendering
+    foreach ( element_children($element) as $child_key ) {
+      $element[$child_key]['#custom_input'] = $settings;
+      if ( empty($element[$child_key]['#pre_render']) ) $element[$child_key]['#pre_render'] = array();
+      $element[$child_key]['#pre_render'][] = 'custom_input_pre_render';
+    }
+  }
+
+  return $element;
+}
+
+/************ ATTACH CUSTOM INPUT SETTINGS TO FORMS *******************/
+
+/**
+ * Implements hook_field_attach_form().
+ * Used to initiate custom_input processing by attaching the pre-render function.
+ * Performs prepopulate functions.
+ * Is called AFTER hook_field_widget_form_alter
+ */
+function custom_input_field_attach_form($entity_type, $entity, &$form, &$form_state, $langcode) {
+  $fields = field_info_instances($entity_type, $form['#bundle']);
+  // Iterate over the fields in the form.
+  foreach ($fields as $field_name => $value) {
+    // If custom input is enabled, apply the settings to the form element
+    if ( !empty($value['widget']['settings']['custom_input']['enabled']) ) {
+      $settings =& $value['widget']['settings']['custom_input']; //convenience
+
+      // prepopulation code, still very rough, and needs significant testing.
+      // will likely not work if form is rebuilt using AJAX (see entityreference_prepopulate)
+      if ( !empty($settings['advanced']['prepop']) ) {
+        $prepop = custom_input_field_match(drupal_get_query_parameters(), $field_name);
+        // if field matches and there is a value to prepopulate with
+        if ( $prepop ) {
+          $parents = NULL; // would be nice to add the language if we knew it.
+          if ( !empty($prepop['children']) ) $parents = $prepop['children'];
+          $element =& custom_input_get_reference($form[$field_name], '#default_value', $parents);
+          $value = $prepop['value'];
+          // only add value to elements with empty values
+          if ( $element && empty($element['#default_value']) && '0' !== $element['#default_value'] && !empty($prepop['value']) ) {
+            // for checkboxes and radios, we must check that the child field exists before setting it
+            if ( in_array($element['#type'], array('checkboxes','radios')) ) {
+              if ( !empty($element[$value]) ) {
+                $element[$value]['#default_value'] = true;
+                if ( array_key_exists('#checked', $element[$value]) ) $element[$value]['#checked'] = TRUE;
+              }
+            }
+            // otherwise, we just set the value
+            else {
+              $element['#default_value'] = $value;
+              if ( 'checkbox' == $element['#type'] ) $element['#checked'] = TRUE;
+            }
+          } // end of replace field value
+          // if asked to disable, do so whether or not a value was actually changed
+          if ( !empty($settings['advanced']['disable_prepop']) ) $element['#disabled'] = TRUE;
+        } // end of if prepop
+        unset($settings['advanced']['prepop']);
+        unset($settings['advanced']['disable_prepop']);
+      } // end of prepop code
+
+      // store remaining custom input settings with the element, and add the pre-render function
+      if ( !isset($form[$field_name]['#pre_render']) ) $form[$field_name]['#pre_render'] = array();
+      $form[$field_name]['#pre_render'][] = 'custom_input_pre_render';
+      $form[$field_name]['#custom_input'] = $settings;
+    }
+  }
+}
+
+
+/********************** THEMING FUNCTIONS *************************************/
+
+/**
+ * Implements hook_theme()
+ * Makes custom_input theming functions available to the renderer
+ * @return array
+ */
+function custom_input_theme() {
+  $path = 'custom_input.theme.inc';
+  return array(
+    'custom_input_element_label' => array(
+      'render element' => 'element',
+      'file' => $path,
+    ),
+    'custom_input_element' => array(
+      'render element' => 'element',
+      'file' => $path,
+    ),
+    'custom_input_multiple_element' => array(
+      'render element' => 'element',
+      'file' => $path,
+    ),
+    'custom_input_textfield' => array(
+    'render element' => 'element',
+    'file' => $path,
+  )
+  );
+}
+
+
+/**************************** UTILITY FUNCTIONS *******************************/
+
+/**
+ * Returns a reference to a child element that has a specified array key
+ * Useful for traversing into nested form element arrays.
+ * @param array &$element
+ * @param string|integer $key
+ * @param array $parents -- optional array of parent keys that must be traversed before returning element
+ * @param int $depth -- maximum depth to check, defaults to 10
+ * @return array &$element
+ */
+function &custom_input_get_reference(&$element, $key, $parents=NULL, $depth=10) {
+  static $null = NULL; // functions that return references must return references
+  if ( !is_array($element) ) return $null; // end of the nested array
+  if ( $depth <= 0 ) return $null; // prevent infinite loops
+  // if the current element has the specified key, and there are no parents still to be traversed, return reference to the element
+  if ( array_key_exists($key, $element) && empty($parents) ) return $element;
+  // otherwise iterate over the children
+  foreach ( element_children($element) as $child ) {
+    // if there are parents to be traversed, and this child is the first of them, remove it from the stack before searching downwards
+    if ( !empty($parents) && $parents[0] == $child ) array_shift($parents);
+    // search into the child array
+    $out = &custom_input_get_reference($element[$child], $key, $parents, $depth-1);
+    if ( $out ) return $out; // return the first hit
+  }
+  return $null;
+}
+
+/**
+ * Matches URL parameters passed as array to a field name
+ * @param array $params -- usually the output of drupal_get_query_parameters()
+ * @param string $field_name -- name of the field
+ * @return array|bool -- returns FALSE for no match, else array(
+ *    'field_name'=>fieldname,
+ *    'value'=>sanitized, decoded value,
+ *    'children'=>FALSE|array of [] specifiers)
+ */
+function custom_input_field_match($params, $field_name) {
+  if ( empty($params) || empty($field_name) ) return FALSE;
+  foreach ( $params as $key => $value ) {
+    $subfields = NULL;
+    if ( strpos($key, '[') ) {
+      $subfields = substr($key, strpos($key, '['));
+      $key = substr($key,0,strpos($key, '['));
+    }
+    if ( $key == $field_name ) {
+      $out = array(
+        'field_name'=>$field_name,
+        'value'=>check_plain(urldecode($value)),
+      );
+      if ( $subfields ) {
+        $children = array();
+        preg_match_all('/\[(.*?)\]/', $subfields, $children, PREG_PATTERN_ORDER);
+        if ( !empty($children[1]) ) $out['children'] = array_map(function($v) {return check_plain(urldecode($v));}, $children[1]);
+
+      } else {
+        $out['children'] = NULL;
+      }
+      return $out;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Replaces theme callback with custom_input theme callback, if applicable
+ * @param $theme -- name of current theme callback
+ * @param int $key -- for use by array_walk()
+ */
+function custom_input_theme_alter(&$theme, $key=NULL) {
+  static $new_themes;
+  if ( !isset($new_themes) ) {
+    $new_themes = array(
+      'form_element_label' => 'custom_input_label',
+      'form_element' => 'custom_input_element',
+      'field_multiple_value_form' => 'custom_input_multiple_element',
+      'textfield' => 'custom_input_textfield',
+    );
+  }
+  if ( isset($new_themes[$theme]) ) $theme = $new_themes[$theme];
+}
+
+/**
+ * Replaces theme callbacks with custom_input theme callbacks, if applicable
+ * @param array $theme_wrappers
+ */
+function custom_input_theme_wrappers_alter(array &$theme_wrappers) {
+  array_walk($theme_wrappers, 'custom_input_theme_alter');
+}
+
+/**
+ * Takes a string containing one or more class names, sanitizes them, and adds to the attributes class array
+ * @param array &$existing -- the existing attributes array
+ * @param string $classes
+ */
+function custom_input_apply_classes(&$existing, $classes) {
+  $wc = custom_input_sanitize_classes($classes);
+  if ( empty($existing['class']) ) {
+    $existing['class'] = $wc;
+  } else {
+    if ( is_string($existing['class']) ) $existing['class'] = array($existing['class']);
+    $existing['class'] = array_merge($existing['class'], $wc);
+  }
+  // note that we do not use _form_set_class, which does additional stuff that should not happen here.
+}
+
+/**
+ * Turns one or more classes separated by spaces into an array of class names.
+ * Uses drupal_html_class() to sanitize class names.
+ * Returns empty array if error or none passed.
+ * @param string $classes
+ * @return array
+ */
+function custom_input_sanitize_classes($classes) {
+  $wc = explode(' ', trim($classes));
+  if ( !empty($wc) && is_array($wc) ) {
+    array_walk($wc,'drupal_html_class');
+    return $wc;
+  }
+  return array();
+}
+
+/**
+ * Takes a string containing one or more lines, each in form attributes|value
+ * Parses, cleans and adds to the attributes array, replacing attributes of the same name
+ * Uses drupal_clean_css_identifier() to sanitize attribute names
+ * @param array &$existing -- the existing #attributes array
+ * @param string $attrs_string
+ */
+function custom_input_apply_attr(&$existing, $attrs_string) {
+  // separate the string into separate lines of text
+  foreach ( explode("\n", $attrs_string) as $attr_string ) {
+    // parse the line
+    $tmp = explode('|', $attr_string);
+    //skip any non-conforming lines
+    if ( count($tmp) != 2 ) continue;
+    // Sanitize attribute name generously.  Attribute values are sanitized later at the theming level
+    $attr = drupal_clean_css_identifier(trim($tmp[0]), array(' ' => '-', '/' => '-', ));
+    //trim the value, turn it into an array, and add it, overwriting existing
+    $val = array(trim($tmp[1]));
+    $existing[$attr] = $val;
+  }
+}
+
+
+function custom_input_parse_states($settings) {
+  $out[$settings['state']][$settings['remote_field']] = array();
+  foreach ( explode("\n", $settings['conditions']) as $cond_string ) {
+    $tmp = explode('|', $cond_string);
+    if ( count($tmp) != 2 ) continue;
+    $cond_type = check_plain(trim($tmp[0]));
+    $val = check_plain(trim($tmp[1]));
+    if ( 'false' == strtolower($val) ) $val = FALSE;
+    if ( 'true' == strtolower($val) ) $val = TRUE;
+    $out[$settings['state']][$settings['remote_field']][$cond_type] = $val;
+  }
+  return $out;
+}
+
+/******************* COLLECT SETTINGS **************************/
+
+/**
+ * Implements hook_form_alter().
+ * Adds a Custom Input fieldset and fields to the Field UI edit form
+ * for all non-excluded field types.  See custom_input_excluded() for list.
+ */
+function custom_input_form_field_ui_field_edit_form_alter(&$form, &$form_state, $form_id) {
+//kpr($form);
+  if ( !custom_input_excluded($form['instance']['#type']) ||
+       ( 'fieldset'==$form['instance']['#type']
+         && !empty($form['instance']['widget']['type']['#value'])
+         && !custom_input_excluded($form['instance']['widget']['type']['#value']) ) )
+  {
+
+//kpr($form['instance']);
+//kpr($form['instance']['widget']['type']['#value']);
+    $settings =& $form['instance']['widget']['settings']; // reference to the current form's settings
+    $hsettings =& $form['#instance']['widget']['settings']; // reference to saved settings for this field
+
+    //@TODOGAB -- pare down the options if they don't apply to the current widget
+
+    $settings['custom_input'] = array(
+      '#type' => 'fieldset',
+      '#collapsible' => true,
+      '#collapsed' => empty($hsettings['custom_input']['enabled']),
+      '#title' => t('Custom Input Settings'),
+      '#description' => '<p>'. t('Not all of these settings will work with all types of fields and widgets. The "Prompt" and "Wrapper class(es)" settings are the most likely to work.  See the README for more details.') . '</p>',
+    );
+    $settings['custom_input']['enabled'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Use Custom Input'),
+      '#description' => t('Customize the form markup for this field.'),
+      '#default_value' => isset($hsettings['custom_input']['enabled']) ? $hsettings['custom_input']['enabled'] : NULL,
+    );
+    $settings['custom_input']['prompt'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Prompt'),
+      '#description' => t('A custom prompt to use when the field is shown in a form.  Replaces the field label.  May include some HTML.'),
+      '#default_value' => isset($hsettings['custom_input']['prompt']) ? $hsettings['custom_input']['prompt'] : NULL,
+    );
+    $settings['custom_input']['wrapper_classes'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Wrapper class(es)'),
+      '#description' => t('Additional class(es) to add to the wrapper element for this field.  Separate multiple classes with spaces.'),
+      '#default_value' => isset($hsettings['custom_input']['wrapper_classes']) ? $hsettings['custom_input']['wrapper_classes'] : NULL,
+    );
+    $settings['custom_input']['group_classes'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Group class(es)'),
+      '#description' => t('Additional class(es) to add to the grouping element.  Only applies to fields that hold more than one input: e.g. checkboxes, radios, some date fields, and link fields.'),
+      '#default_value' => isset($hsettings['custom_input']['group_classes']) ? $hsettings['custom_input']['group_classes'] : NULL,
+    );
+    $settings['custom_input']['input_classes'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Input class(es)'),
+      '#description' => t('Additional class(es) to add to the input element(s).'),
+      '#default_value' => isset($hsettings['custom_input']['input_classes']) ? $hsettings['custom_input']['input_classes'] : NULL,
+    );
+    $settings['custom_input']['label_classes'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Label class(es)'),
+      '#description' => t('Additional class(es) to add to the label element.'),
+      '#default_value' => isset($hsettings['custom_input']['label_classes']) ? $hsettings['custom_input']['label_classes'] : NULL,
+    );
+    $settings['custom_input']['help_classes'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Help class(es)'),
+      '#description' => t('Additional class(es) to add to the help element.'),
+      '#default_value' => isset($hsettings['custom_input']['help_classes']) ? $hsettings['custom_input']['help_classes'] : NULL,
+    );
+    $settings['custom_input']['move_help'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Place help after label'),
+      '#description' => t('If checked, any help text you have added above will be shown immediately after the label/prompt for this field, instead of the default position at the end of the field markup. Can produce unexpected results for complex widgets.'),
+      '#default_value' => isset($hsettings['custom_input']['move_help']) ? $hsettings['custom_input']['move_help'] : NULL,
+//      '#states' => array(
+//        ':textarea[name="instance[description]"]' => array('filled' => TRUE),
+//      ),
+    );
+    // advanced settings
+    $adv_collapsed = (empty($hsettings['custom_input']['advanced']['input_attr'])
+      && empty($hsettings['custom_input']['advanced']['label_attr'])
+      && empty($hsettings['custom_input']['advanced']['help_attr'])
+      && empty($hsettings['custom_input']['advanced']['prepop'])
+    );
+    $settings['custom_input']['advanced'] = array(
+      '#type' => 'fieldset',
+      '#collapsible' => TRUE,
+      '#collapsed' => $adv_collapsed,
+      '#title' => t('Custom HTML Attributes and Other Advanced Settings'),
+      '#description' => '<p>'. t('Attributes set here will REPLACE existing attributes of the same name.  Do not use these settings unless you know what you are doing.') . '<ul>'
+                        . '<li>' . t('When entering attributes, separate the name of the attribute from its value with a pipe symbol, like so: placeholder|This is the placeholder value for my text field.') . '</li>'
+                        . '<li>' . t('Enter one attribute per line. Don\'t use quotation marks.') . '</li>'
+                        . '<li>' . t('Due to inherent limitations in the Drupal form theming layer, you cannot have naked attributes.  All attributes will be rendered as attr="value".') . '</li>'
+                        . '</ul></p>',
+    );
+    $settings['custom_input']['advanced']['input_attr'] = array(
+      '#type' => 'textarea',
+      '#title' => t('Input attributes'),
+      '#rows' => 2,
+      '#description' => t('HTML attributes to apply to the input element(s) for this field such as a placeholder or an HTML5 input type.'),
+      '#default_value' => isset($hsettings['custom_input']['advanced']['input_attr']) ? $hsettings['custom_input']['advanced']['input_attr'] : NULL,
+    );
+    $settings['custom_input']['advanced']['label_attr'] = array(
+      '#type' => 'textarea',
+      '#title' => t('Label attributes'),
+      '#rows' => 1,
+      '#description' => t('HTML attributes to apply to the label element for this field.  Since Drupal already supplies the "for" attribute, this is not commonly needed, and is included only for completeness.'),
+      '#default_value' => isset($hsettings['custom_input']['advanced']['label_attr']) ? $hsettings['custom_input']['advanced']['label_attr'] : NULL,
+    );
+    $settings['custom_input']['advanced']['help_attr'] = array(
+      '#type' => 'textarea',
+      '#title' => t('Help attributes'),
+      '#rows' => 1,
+      '#description' => t('HTML attributes to apply to the help element for this field.  This is mainly useful for accessibility, e.g. id|aria-describer.'),
+      '#default_value' => isset($hsettings['custom_input']['advanced']['help_attr']) ? $hsettings['custom_input']['advanced']['help_attr'] : NULL,
+    );
+    $settings['custom_input']['advanced']['prepop'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Permit pre-population'),
+      '#description' => t('Permit this field to be pre-populated from the URL using a query string like this: @example=value  Be sure to urlencode the value!', array('@example'=> $form['instance']['field_name']['#value'])),
+      '#default_value' => isset($hsettings['custom_input']['advanced']['prepop']) ? $hsettings['custom_input']['advanced']['prepop'] : NULL,
+    );
+    $settings['custom_input']['advanced']['disable_prepop'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Disable the field if pre-populated'),
+      '#description' => t('Disable this field if it has been pre-populated from the URL'),
+      '#default_value' => isset($hsettings['custom_input']['advanced']['disable_prepop']) ? $hsettings['custom_input']['advanced']['disable_prepop'] : NULL,
+      '#states' => array(
+        'visible' => array(
+          ':input[name="instance[widget][settings][custom_input][advanced][prepop]"]' => array('checked' => TRUE),
+        ),
+      ),
+    );
+    // states
+    $states_collapsed = empty($hsettings['custom_input']['states']['state']);
+    $settings['custom_input']['states'] = array(
+      '#type' => 'fieldset',
+      '#collapsible' => TRUE,
+      '#collapsed' => $states_collapsed,
+      '#title' => t('Conditional Field'),
+      '#description' => '<p>'. t('Drupal has some cool functionality to change the state of a field based on what the user does in another field.  This lets you use some of that functionality.  But honestly, really do not use these settings unless you know what you are doing.') . '<ul>'
+        . '<li>' . t('Be sure to read the drupal_process_states() documentation at !url.', array('!url'=>l('Drupal.org','https://api.drupal.org/api/drupal/includes!common.inc/function/drupal_process_states/7'))) . '</li>'
+        . '<li>' . t('This only allows you to add one "state" to the field, which in turn can depend on only one other field.') . '</li>'
+        . '<li>' . t('You must identify the state you want the element to have when the condition is met, the other field on which the state of this field depends, and one or more conditions that must be true for that other field.') . '</li>'
+        . '</ul></p>',
+    );
+    $poss_states = array('enabled','disabled','required','optional','visible','invisible','checked','unchecked','expanded','collapsed');
+    $settings['custom_input']['states']['state'] = array(
+      '#type' => 'select',
+      '#options' => array_combine($poss_states, $poss_states),
+      '#empty_option' => '- None -',
+      '#required' => FALSE,
+      '#title' => 'What should happen to this field when the condition is met?',
+      '#multiple' => FALSE,
+      '#default_value' => isset($hsettings['custom_input']['states']['state']) ? $hsettings['custom_input']['states']['state'] : NULL,
+    );
+    $settings['custom_input']['states']['remote_field'] = array(
+      '#type' => 'textfield',
+      '#title' => 'What other field does the state of this field depend on?',
+      '#description' => t('Use a jQuery-style string to identify the other field, e.g. :input[name="field_example[und][other]"]'),
+      '#default_value' => isset($hsettings['custom_input']['states']['remote_field']) ? $hsettings['custom_input']['states']['remote_field'] : NULL,
+    );
+    $settings['custom_input']['states']['conditions'] = array(
+      '#type' => 'textarea',
+      '#title' => t('Conditions'),
+      '#rows' => 2,
+      '#description' => t('<p>Each line should be a type of condition, a pipe symbol, and the value to be tested. Examples:')
+        . t('<ul><li>checked|true</li><li>empty|false</li><li>value|other</li></ul>')
+        . t('For this purpose, the words "true" and "false" will be treated as the boolean values they represent.</p>'),
+      '#default_value' => isset($hsettings['custom_input']['states']['conditions']) ? $hsettings['custom_input']['states']['conditions'] : NULL,
+    );
+
+  }
+
+}
+
+/*********************** STATIC DATA FUNCTIONS *****************************/
+
+/**
+ * Returns array of field types for which custom inputs are NOT supported AT ALL.
+ * I.e. types on this list will not be shown the custom_input ui on their field configuration page, if any.
+ * @param string $type -- if specified, causes function to return true if field type is not supported
+ * @return array|bool -- array of field types, in no particular order
+ */
+function custom_input_excluded($type = NULL) {
+  //does not use drupal_static() because it's the array we need to cache, not the result.
+  static $excluded;
+  if ( !isset($excluded) ) {
+    $excluded = array(
+      'contextual_links',
+      'field_ui_table',
+      'page',
+      'ajax',
+      'html_tag',
+      'styles',
+      'machine_name',
+      'weight',
+      'hidden',
+      'item',
+      'value',
+      'fieldset',
+      'vertical_tabs',
+      'horizontal_tabs',
+      'multipage',
+      'multipage_pane',
+      'rules_duration',
+      'rules_data_selection',
+      'container', //THINK
+      'actions', //THINK
+      // field widgets that don't work
+      'name',
+    );
+  }
+  if ( !empty($type) && is_string($type) ) return in_array($type, $excluded);
+  return $excluded;
+}

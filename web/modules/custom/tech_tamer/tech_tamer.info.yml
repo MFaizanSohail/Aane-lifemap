@@ -1,0 +1,7 @@
+name: Tech-Tamer Utilities
+type: module
+description: 'Provides miscellaneous utility functions.'
+core_version_requirement: ^10
+package: Custom
+files:
+  - views/tech_tamer_handler_filter_user_current_or_role.inc

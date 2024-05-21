@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the Assessment Export feature.
+ */
+
+include_once 'assessment_export.features.inc';

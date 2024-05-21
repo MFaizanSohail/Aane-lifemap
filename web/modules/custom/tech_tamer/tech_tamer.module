@@ -1,0 +1,292 @@
+<?php
+/**
+ * @file tech_tamer.module
+ * Miscellaneous general purpose utility functions
+ */
+
+/**
+ * Implements of hook_views_api().
+ * This provides a custom view filter to check for either current user=author OR current user has role
+ */
+function tech_tamer_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'tech_tamer') . '/views',
+  );
+}
+
+/**
+ * Add visible markers to site when working locally or in PANTHEON dev/test
+ * Colors the admin menu toolbar depending on env.
+ * Also adds livereload if local server and not HTTPS
+ * @param string $vars
+ */
+function tech_tamer_preprocess_html(&$vars) {
+  // env defaults to nothing
+  $env = NULL;
+  // check for pantheon environment by constant
+  if ( defined('PANTHEON_ENVIRONMENT') ) {
+    if ( 'live' !== PANTHEON_ENVIRONMENT ) $env = PANTHEON_ENVIRONMENT;
+  }
+  // check for local by ip address
+  elseif ( substr($_SERVER['SERVER_ADDR'],0,7) == '192.168' ) {
+    $env = 'local';
+    // in local, add livereload if not HTTPS
+    if ( empty($_SERVER['HTTPS']) ) drupal_add_js('//ttserver:35729/livereload.js', 'external');
+  }
+  // check for remote dev by host name
+  elseif ( 'dev.' == substr($_SERVER['SERVER_NAME'], 0, 4) ) {
+    $env = 'dev';
+  }
+  // only make changes to the page if we know that we're in a defined environment
+  if ( $env ) {
+    // change the page title to indicate environment
+    if ( isset($vars['head_title']) ) $vars['head_title'] = strtoupper($env) . '-' . $vars['head_title'];
+    // if the admin menu is to be displayed, add a class to the body and css to change the color of the admin bar
+    if ( user_access('access administration menu') && function_exists('admin_menu_suppress') && !admin_menu_suppress(FALSE) ) {
+      if ( !empty($vars['classes_array']) ) $vars['classes_array'][] = "env-$env";
+      drupal_add_css(drupal_get_path('module','tech_tamer').'/css/tt_admin_menu.css','file');
+    }
+  }
+}
+
+/**
+ * Alter the head area of the page
+ * Removes Drupal Generator meta tag
+ * @param array $vars
+ */
+function tech_tamer_html_head_alter(&$vars) {
+  //remove the Drupal 7 identifier
+  unset($vars['system_meta_generator']); 
+}
+
+/**
+ * Implements hook_form_alter to make standard improvements to default forms
+ * @param array &$form
+ * @param array &$form_state
+ * @param string $form_id
+ */
+function tech_tamer_form_alter(&$form, /** @noinspection PhpUnusedParameterInspection */
+                               &$form_state, $form_id) {
+
+  // customize contact form so that subject and type can be set through URL query, if provided
+  if ( 'contact_site_form' == $form_id ) {
+    $subject = filter_input(INPUT_GET, 'subject', FILTER_SANITIZE_STRING);
+    $cid = filter_input(INPUT_GET, 'cid', FILTER_SANITIZE_NUMBER_INT);
+//    if ( function_exists('xdebug_var_dump') ) xdebug_var_dump($form);
+    if ( !empty($subject) )
+      $form['subject']['#default_value'] = $subject;
+    if ( !empty($cid) && isset($form['cid']['#options'][$cid]) )
+      $form['cid']['#default_value'] = $cid;
+  }
+
+  // add "forgot password" link to basic user_login form
+  elseif ( 'user_login' == $form_id ) {
+    $form['lost_password'] = array(
+      '#markup' => '<div class="login-forgot">' . l(t('Request new password'), 'user/password') . '</div>',
+    );
+  }
+
+}
+
+
+
+/**
+ * Get Drupal tid, searching by name (not case sensitive)
+ * @param  string $term   term to be matched
+ * @param  string $bundle machine name of the relevant vocabulary
+ *                        If field is a term ref field, then can be found by putting entity in entity wrapper, getting field info, and using field_info['bundle']
+ * @return int|NULL       Term id if found, NULL if not found, or if term is empty or not string
+ */
+function tech_tamer_get_tid($term, $bundle) {
+  if ( !empty($term) && is_string($term) ) {
+    //get the term id from the taxonomy, using lowercase, trimmed value for matching purposes
+    $tid = db_query('SELECT t.tid FROM {taxonomy_term_data} t LEFT JOIN {taxonomy_vocabulary} v ON t.vid=v.vid WHERE v.machine_name = :bundle AND LOWER(t.name) = :name', array(':bundle'=>$bundle, ':name'=>strtolower(trim($term))))->fetchColumn();
+    return $tid ? $tid : NULL;
+  }
+  return NULL;
+}
+
+/**
+ * Fills empty fields with specified value.
+ * Strips tags before determining that field is empty.  Recurses into field groups.
+ * @param array $content - a $variables['content'] array
+ * @param string $fill - string to fill empty fields with, defaults to "&mdash;"
+ */
+function tech_tamer_fill_empty_fields(&$content, $fill='&mdash;') {
+  if ( is_array($content) ) {
+    foreach ( $content as $key => &$data ) {
+      if ( substr($key,0,5) == 'field' && isset($data[0]['#markup']) )  {
+        $val = strip_tags($data[0]['#markup']);
+        if ( empty($val) ) {
+          $data[0]['#markup'] = $fill;
+        }
+      } elseif ( substr($key,0,5) == 'group' ) tech_tamer_fill_empty_fields($data, $fill);
+    }
+  }
+}
+
+/**
+ * Fills empty fields with specified value.
+ * Strips tags before determining that field is empty.  Recurses into regions and field groups.
+ * @param array $elements - a ds render array
+ * @param string $fill - string to fill empty fields with, defaults to "-"
+ */
+function tech_tamer_ds_fill_empty_fields(array &$elements, $fill='-') {
+  foreach ( $elements as $key => &$data ) {
+    if ( substr($key,0,5) == 'field' && isset($data[0]['#markup'])) {
+      $val = strip_tags($data[0]['#markup']);
+      if (empty($val)) {
+        $data[0]['#markup'] = $fill;
+      }
+    }
+    elseif ( is_array($data) ) {
+      tech_tamer_ds_fill_empty_fields($data, $fill);
+    }
+  }
+}
+
+/**
+ * Combines the content of two or more fields for presentation
+ * Fields other than the target will be removed from the content array
+ * @param array &$content -- content array that contains the fields, may be a group
+ * @param array $flds - names of fields to be combined.  If in group, all fields must be in same group
+ * @param string $target_fld - name of field into which to dump the result, must also be in same group with other fields.
+ * @param string $separator - defaults to ' '
+ * @param string $title - if supplied, overrides title of target field
+ */
+function tech_tamer_combine_fields(&$content, array $flds, $target_fld, $separator=' ', $title=NULL) {
+  if ( empty($content) || !is_array($content) ) return;
+  if ( count($flds) < 2 ) return;
+//  if ( function_exists('dpm') ) dpm($content);
+  $values = array();
+  foreach ( $flds as $fld ) {
+    if ( empty($content[$fld][0]['#markup']) ) continue;
+    $tmp = strip_tags($content[$fld][0]['#markup']);
+    if ( !empty($tmp) ) $values[] = $content[$fld][0]['#markup'];
+  }
+  if ( !empty($values) ) {
+    $content[$target_fld][0]['#markup'] = implode($separator, $values);
+    if ( !is_null($title) ) $content[$target_fld]['#title'] = $title;
+    foreach ( $flds as $fld ) if ( $target_fld != $fld ) unset($content[$fld]);
+  }
+//  if ( function_exists('dpm') ) dpm($content);
+}
+
+/**
+ * Combines the content of two or more fields for presentation when display suite is enabled
+ * Fields other than the target will be removed from the content array
+ * Calls the normal tech_tamer_combine_fields() after locating the target fields in the ds elements array
+ * @param array &$elements -- elements array available from hook_ds_pre_render
+ * @param array $flds - names of fields to be combined.  If in an area and/or field group, all fields must be in same area/group
+ * @param string $target_fld - name of field into which to dump the result, must also be in same group with other fields.
+ * @param string $separator - defaults to ' '
+ * @param string $title - if supplied, overrides title of target field
+ */
+function tech_tamer_ds_combine_fields(&$elements, array $flds, $target_fld, $separator=' ', $title=NULL) {
+  //find the fieldgroup that the first field is in.  Assumes all fields are in same group.
+  $srch_fld = $flds[0];
+  foreach ( $elements as $region => $groups ) {
+    foreach ( $groups as $group => $data) {
+      if ( isset($data[$srch_fld]) ) {
+        tech_tamer_combine_fields($elements[$region][$group], $flds, $target_fld, $separator, $title);
+        return;
+      }
+    }
+  }
+}
+
+/**
+ * Removes a field group from a ds elements array
+ * @param array &$elements -- ds render array
+ * @param string $name -- name of group as it appears in the id of the fieldset, e.g. 'group_admin'
+ */
+function tech_tamer_ds_remove_group(&$elements, $name) {
+  foreach ( $elements as &$content) {
+    foreach ( $content as $key => $el ) {
+      $match = false;
+      if ( isset($el['#type']) && 'fieldset' == $el['#type'] ) {
+        $match = !empty($el['#id']) && strpos($el['#id'], $name);
+        //sometimes the group name is only present as a class
+        if ( !$match ) $match = !empty($el['#attributes']['class']) && in_array(drupal_clean_css_identifier($name),$el['#attributes']['class']);
+        if ( $match ) {
+          unset($content[$key]);
+          return;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Copies default values from one form array to another.
+ * The two arrays must be essentially parallel
+ * @param array $from
+ * @param array $to
+ */
+function tech_tamer_copy_default_value(array $from, array &$to) {
+  $done = false;
+  if ( array_key_exists('#default_value', $from) ) {
+    $to['#default_value'] = $from['#default_value'];
+    $done = true;
+  }
+  // address fields hold default values in non-standard location
+  if ( array_key_exists('#address', $from) && array_key_exists('#address', $to) ) {
+    $to['#address'] = $from['#address']; //array_merge($to['#address'], $from['#address']);
+    $done = true;
+  }
+  if ( !$done ) {
+    foreach ( element_children($from) as $key ) {
+      if ( array_key_exists($key, $to) && is_array($from[$key]) && is_array($to[$key]) ) {
+        tech_tamer_copy_default_value($from[$key], $to[$key]);
+      }
+    }
+  }
+}
+
+
+/**
+ * Utility function for finding and presenting the value of a key from a nasty Drupal infinite nested array
+ * @param $needle
+ * @param array|object $haystack
+ * @param integer $depth - defaults to 0, prevents crashes from infinite recursion
+ * @return null|string
+ */
+function tech_tamer_find_key($needle, $haystack, $depth=0) {
+  if ( $depth> 20 || empty($needle) || empty($haystack) ) return NULL;
+  if ( is_array($haystack) && array_key_exists($needle, $haystack) ) {
+    return "['$needle'] = (" . gettype($haystack[$needle]) . ')' . print_r($haystack[$needle], true);
+  }
+  elseif ( is_object($haystack) && property_exists($haystack, $needle) ) {
+    return "->$needle = (" . gettype($haystack->$needle) . ')' . print_r($haystack->$needle, true);
+  }
+  $out = array();
+  foreach ($haystack as $key => $val) {
+    if ( is_array($val) && !empty($val) ) {
+      $temp = tech_tamer_find_key($needle, $val, $depth+1);
+      if ( $temp ) $out[] = "['$key']" . $temp;
+    }
+  }
+  return implode("\n",$out);
+}
+
+/**
+ * Removes "required" from all form elements.
+ * Use at your own risk.
+ * Use:  in a _form_alter function, $form['#after_build'][] = 'tech_tamer_remove_required';
+ * @param array $element
+ * @param array $form_state
+ * @param int $depth
+ * @return mixed
+ */
+function tech_tamer_remove_required($element, &$form_state, $depth=0) {
+  if ( $depth > 6 ) return $element; // put a limit on recursion
+  if ( !empty($element['#required']) ) $element['#required'] = FALSE;
+  // only iterate over children for likely elements
+  if ( empty($element['#type']) || !in_array($element['#type'], array('radios','checkboxes')) ) {
+    foreach ( element_children($element) as $name ) {
+      $element[$name] = tech_tamer_remove_required($element[$name], $form_state, $depth+1);
+    }
+  }
+  return $element;
+}

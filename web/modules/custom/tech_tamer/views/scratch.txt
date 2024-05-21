@@ -1,0 +1,50 @@
+
+<?php
+  // uid - needs to be part of this group, to ensure that the user table is added if, in fact, we check current user.
+  
+  /* DEFINITIONS OF THE FILTERS I'M PULLING FROM 
+  $data['users']['uid_current'] = array(
+    'real field' => 'uid',
+    'title' => t('Current'),
+    'help' => t('Filter the view to the currently logged in user.'),
+    'filter' => array(
+      'handler' => 'views_handler_filter_user_current',
+      'type' => 'yes-no',
+    ),
+  );
+  
+  // how the roles one is defined
+    $data['users_roles']['rid'] = array(
+    'title' => t('Roles'),
+    'help' => t('Roles that a user belongs to.'),
+    'field' => array(
+      'handler' => 'views_handler_field_user_roles',
+      'no group by' => TRUE,
+    ),
+    'filter' => array(
+      'handler' => 'views_handler_filter_user_roles',
+      'numeric' => TRUE,
+      'allow empty' => TRUE,
+    ),
+    'argument' => array(
+      'handler' => 'views_handler_argument_users_roles_rid',
+      'name table' => 'role',
+      'name field' => 'name',
+      'empty field name' => t('No role'),
+      'zero is null' => TRUE,
+      'numeric' => TRUE,
+    ),
+  );
+  */
+  // user hook_views_data_alter to add the following
+  
+   $data['users']['uid_current_or_role'] = array(
+    'real field' => 'uid',
+    'title' => t('Current User Referenced or Role'),
+    'help' => t('Filter the view to the currently logged in user.'),
+    'filter' => array(
+      'handler' => 'tech_tamer_handler_filter_user_current_or_role',
+      'type' => 'yes-no',
+    ),
+  ); 
+  

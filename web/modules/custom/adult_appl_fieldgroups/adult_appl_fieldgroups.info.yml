@@ -1,0 +1,74 @@
+name: adult_appl_fieldgroups
+core_version_requirement: ^10 || ^9
+package: Features
+dependencies:
+  - ctools
+  - field_group
+configuration:
+  field_group.group_admin:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: default
+  field_group.group_admin_form:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: form
+  field_group.group_applicant_information:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: default
+  field_group.group_applicant_information_form:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: form
+  field_group.group_diagnosis_treatment:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: default
+  field_group.group_diagnosis_treatment_form:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: form
+  field_group.group_goals_interests:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: default
+  field_group.group_goals_interests_form:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: form
+  field_group.group_history:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: default
+  field_group.group_history_form:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: form
+  field_group.group_program:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: default
+  field_group.group_statement_truth_form:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: form
+  field_group.group_truth:
+    type: entity_form_display
+    entity_type: entityform
+    bundle: appl_adult
+    mode: default
+project_path: modules/custom
+

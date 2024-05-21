@@ -1,0 +1,12 @@
+.env-local #admin-menu {
+    background-image: url(bkg-brown.png) !important;
+    background-color: #880015 !important;
+}
+.env-dev #admin-menu {
+    background-image: url(bkg-green.png) !important;
+    background-color: #22B14C !important;
+}
+.env-test #admin-menu {
+    background-image: url(bkg-blue.png) !important;
+    background-color: #3F48CC !important;
+}

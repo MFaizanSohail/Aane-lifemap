@@ -1,0 +1,18 @@
+Index: aane-lifemap/sites/all/modules/permission_select/permission_select.module
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- aane-lifemap/sites/all/modules/permission_select/permission_select.module	(revision a607e58f7ed590e13a4230dffe988865a19f7351)
++++ aane-lifemap/sites/all/modules/permission_select/permission_select.module	(revision )
+@@ -46,8 +46,8 @@
+   foreach (element_children($form['permission']) as $key) {
+     $row = array();
+     // Module name
+-    if (is_numeric($key)) {
+-			$mod_name = t($form['permission'][$key]['#id']);
++    $mod_name = t($form['permission'][$key]['#id']);
++    if (is_numeric($key)) {
+       $row[] = array('data' => drupal_render($form['permission'][$key]), 'class' => array('module module_name'), 'id' => 'module-' . $mod_name, 'colspan' => count($form['role_names']['#value']) + 1);
+     }
+     else {

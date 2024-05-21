@@ -1,0 +1,24 @@
+name: client_dashboard
+type: module
+description: 'All tabs from the client dashboard'
+core_version_requirement: ^8 || ^9 || ^10
+dependencies:
+  - drupal:ctools
+  - drupal:views
+  - drupal:views_data_export
+package: Features
+version: 7.x-2.0
+features:
+  ctools:
+    - views:views_default:3.0
+  features_api:
+    - api:2
+  views_view:
+    - client_dash
+    - client_dash_goals
+    - client_dash_intake
+    - client_dash_reports
+    - client_dash_sessions
+    - client_notes
+    - clone_of_client_goals
+

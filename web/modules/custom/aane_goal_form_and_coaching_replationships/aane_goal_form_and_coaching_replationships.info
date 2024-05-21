@@ -1,0 +1,53 @@
+name: 'AANE - Goal Form and Coaching Replationships'
+type: module
+description: 'Exports the settings for the coaching relationship and goals forms'
+core_version_requirement: ^8 || ^9 || ^10
+package: Custom
+version: '7.x-0.2'
+dependencies:
+  - options
+  - taxonomy
+  - text
+  - views
+features:
+  ctools:
+    - field_group:field_group:1
+    - strongarm:strongarm:1
+    - views:views_default:3.0
+  features_api:
+    - api:2
+  field_base:
+    - field_appropriate_greetings
+    - field_appt_location
+    - field_appt_notes
+    - field_ask_accept_support
+    - field_ask_for_references
+    # Include other field_base entries here...
+  field_group:
+    - group_admin|node|skills_assess_adult|default
+    - group_admin|node|skills_assess_adult|form
+    # Include other field_group entries here...
+  field_instance:
+    - node-appointment-field_appt_location
+    - node-appointment-field_appt_notes
+    # Include other field_instance entries here...
+  node:
+    - appointment
+    - coaching_relationship
+    - goal
+    - skills_assess_adult
+    - skills_assess_teen
+  taxonomy:
+    - funding_program
+    - goals
+    - time_entry_status
+    - time_entry_type
+  variable:
+    - auto_entitylabel_node_appointment
+    - auto_entitylabel_node_coaching_relationship
+    # Include other variable entries here...
+    - pathauto_node_appointment_pattern
+    - pathauto_node_coaching_relationship_pattern
+    # Include other pathauto entries here...
+  views_view:
+    - admin_coaching

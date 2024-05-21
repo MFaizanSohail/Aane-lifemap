@@ -1,0 +1,61 @@
+diff --git a/entityform.module b/entityform.module
+index 8699cd4..da030c6 100644
+--- a/entityform.module
++++ b/entityform.module
+@@ -384,41 +384,29 @@ function _entityform_get_entityform_views_options() {
+  * @return EntityformType[]
+  *   Depending whether $type isset, an array of entityform types or a single one.
+  */
+-function entityform_get_types($type_name = NULL) {
++function entityform_get_types($type_name = NULL, $reset = FALSE) {
+   // entity_load will get the Entity controller for our entityform entity and call the load
+   // function of that object - we are loading entities by name here.
+-  // Use the advanced drupal_static() pattern since this is called very often.
+-  static $drupal_static_fast;
+-  $cache_key = 'entityform_types';
+-
+-  if (!isset($drupal_static_fast)) {
+-    $drupal_static_fast[$cache_key] = &drupal_static(__FUNCTION__);
++  $entityform_types = & drupal_static(__FUNCTION__);
++  if (!isset($entityform_types)) {
++    $entityform_types = array();
+   }
+-  $entityform_types = &$drupal_static_fast[$cache_key];
+-
+-  if (empty($entityform_types)) {
+-    if ($cache = cache_get($cache_key)) {
+-      $entityform_types = $cache->data;
++  elseif ($reset) {
++    unset($entityform_types[$type_name]);
++  }
++  if (empty($entityform_types) || (isset($type_name) && empty($entityform_types[$type_name]))) {
++    if (!isset($type_name)) {
++      $entityform_types = entity_load_multiple_by_name('entityform_type', FALSE);
+     }
+     else {
+-      if (!isset($type_name)) {
+-        $entityform_types = entity_load_multiple_by_name('entityform_type', FALSE);
+-      }
+-      else {
+-        $types = entity_load_multiple_by_name('entityform_type', array($type_name));
+-        if (empty($types)) {
+-          return FALSE;
+-        }
+-        $entityform_types[$type_name] = array_shift($types);
++      $types = entity_load_multiple_by_name('entityform_type', array($type_name));
++      if (empty($types)) {
++        return FALSE;
+       }
+-      cache_set($cache_key, $entityform_types);
++      $entityform_types[$type_name] = array_shift($types);
+     }
+   }
+-  if (isset($type_name)) {
+-    // Even though $type_name was set it might not be valid
+-    return isset($entityform_types[$type_name]) ? $entityform_types[$type_name] : NULL;
+-  }
+-  return $entityform_types;
++  return isset($type_name) ? $entityform_types[$type_name] : $entityform_types;
+ }
+ 
+ /**

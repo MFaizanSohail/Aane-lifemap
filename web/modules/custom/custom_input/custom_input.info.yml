@@ -1,0 +1,9 @@
+name: Custom Input
+type: module
+description: 'Permits users to add custom classes and arbitrary HTML attributes to form input elements.'
+package: Fields
+core_version_requirement: ^10 || ^9
+dependencies:
+  - drupal:field
+  - drupal:filter
+version: 1.0

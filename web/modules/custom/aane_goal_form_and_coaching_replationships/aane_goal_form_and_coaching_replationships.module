@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the AANE - Goal Form and Coaching Replationships feature.
+ */
+
+include_once 'aane_goal_form_and_coaching_replationships.features.inc';

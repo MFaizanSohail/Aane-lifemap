@@ -847,6 +847,7 @@ $databases['default']['default'] = array (
 $settings['config_sync_directory'] = '../config/sync';
 $settings['file_private_path'] = '../private';
 $settings['file_temp_path'] = '../tmp';
+
 // Automatically generated include for settings managed by ddev.
 $ddev_settings = dirname(__FILE__) . '/settings.ddev.php';
 if (getenv('IS_DDEV_PROJECT') == 'true' && is_readable($ddev_settings)) {

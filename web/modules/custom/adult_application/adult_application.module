@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the Adult Application feature.
+ */
+
+include_once 'adult_application.features.inc';

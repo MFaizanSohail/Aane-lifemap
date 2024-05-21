@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the adult_appl_fieldgroups feature.
+ */
+
+include_once 'adult_appl_fieldgroups.features.inc';

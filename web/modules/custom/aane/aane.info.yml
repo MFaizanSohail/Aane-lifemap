@@ -1,0 +1,9 @@
+name: 'AANE Custom Code'
+type: module
+description: 'Various bits of custom functionality for the AANE LifeMap Project'
+package: Custom
+core_version_requirement: ^10 || ^9
+version: '1.0'
+files:
+  - 'views/aane_plugin_argument_validate_client.inc'
+
